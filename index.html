@@ -169,6 +169,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
 .tbl th:first-child, .tbl td:first-child { text-align: left; padding-left: 0; }
 .tbl th i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
 .example { opacity: .55; }
+.entry.ascent .tag { background: var(--c3); }
+label.check { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); cursor: pointer; }
+label.check input { width: 24px; height: 24px; padding: 0; flex: none; accent-color: var(--c2); }
+label.check .hint { display: block; color: var(--muted); font-size: 0.85rem; }
+.swatches { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.88rem; color: var(--muted); }
+.swatches i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
 .example-badge { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 
 /* timer */
@@ -212,8 +218,9 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
   <!-- EINTRAGEN -->
   <section class="view" id="v-log">
     <div class="seg" role="group" aria-label="Art des Trainings">
-      <button type="button" id="t-hangbtn" aria-pressed="true">Hangboard</button>
-      <button type="button" id="t-kraftbtn" aria-pressed="false">Krafttraining</button>
+      <button type="button" data-lt="hang" aria-pressed="true">Hangboard</button>
+      <button type="button" data-lt="kraft" aria-pressed="false">Kraft</button>
+      <button type="button" data-lt="ascent" aria-pressed="false">Ascents</button>
     </div>
 
     <form class="card" id="f-hang" novalidate>
@@ -269,6 +276,27 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
       <p class="err" id="k-err"></p>
       <button class="btn save" type="submit">Übung speichern</button>
     </form>
+
+    <form class="card" id="f-asc" novalidate hidden>
+      <h2>Ascent</h2>
+      <p class="prefill" id="a-prefill"></p>
+      <div class="seg" role="group" aria-label="Art der Begehung">
+        <button type="button" data-ak="boulder" aria-pressed="true">Boulder</button>
+        <button type="button" data-ak="route" aria-pressed="false">Route</button>
+      </div>
+      <div class="grid">
+        <label class="f">Datum<input type="date" id="a-date"></label>
+        <label class="f">Grad<select id="a-grade"></select></label>
+        <p class="prefill full" id="a-scale"></p>
+        <label class="check full"><input type="checkbox" id="a-flash"><span><b>Flash</b><span class="hint">Im ersten Versuch geschafft</span></span></label>
+        <label class="f">Name<span class="hint">optional</span><input id="a-name" placeholder="z. B. La Marie-Rose" autocomplete="off"></label>
+        <label class="f">Gebiet<span class="hint">optional</span><input id="a-area" list="arealist" placeholder="z. B. Frankenjura" autocomplete="off"></label>
+        <label class="f full">Notiz<textarea id="a-note" placeholder="optional"></textarea></label>
+      </div>
+      <datalist id="arealist"></datalist>
+      <p class="err" id="a-err"></p>
+      <button class="btn save" type="submit">Ascent speichern</button>
+    </form>
   </section>
 
   <!-- VERLAUF -->
@@ -300,6 +328,7 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
       <button type="button" data-hf="all" aria-pressed="true">Alle</button>
       <button type="button" data-hf="hang" aria-pressed="false">Hangboard</button>
       <button type="button" data-hf="kraft" aria-pressed="false">Kraft</button>
+      <button type="button" data-hf="ascent" aria-pressed="false">Ascents</button>
     </div>
     <div id="hist"></div>
   </section>
@@ -308,7 +337,8 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
   <section class="view" id="v-prog" hidden>
     <div class="seg" role="group" aria-label="Art des Trainings">
       <button type="button" data-pt="hang" aria-pressed="true">Hangboard</button>
-      <button type="button" data-pt="kraft" aria-pressed="false">Krafttraining</button>
+      <button type="button" data-pt="kraft" aria-pressed="false">Kraft</button>
+      <button type="button" data-pt="ascent" aria-pressed="false">Ascents</button>
     </div>
     <div class="card" id="prog-card"></div>
   </section>
@@ -377,10 +407,11 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
   const state = {
     entries: [], bw: null, mode: 'loading', loaded: false, prefilled: false,
     tab: 'log', logType: 'hang', histFilter: 'all',
-    progType: 'hang', progCat: { hang: null, kraft: null },
-    progMetrics: { hang: ['edge', 'hangt'], kraft: ['kg', 'reps'] }, progLayout: 'together'
+    progType: 'hang', progCat: { hang: null, kraft: null, ascent: null },
+    progMetrics: { hang: ['edge', 'hangt'], kraft: ['kg', 'reps'], ascent: ['grade', 'flash'] }, progLayout: 'together',
+    pyrPeriod: 'all'
   };
-  const dirty = { hang: false, kraft: false };
+  const dirty = { hang: false, kraft: false, ascent: false };
   const backend = { save: null, remove: null, saveBw: null };
 
   function toast(msg) {
@@ -450,15 +481,13 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
   }
   $$('nav.tabs button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
 
+  const LOG_FORMS = { hang: '#f-hang', kraft: '#f-kraft', ascent: '#f-asc' };
   function setLogType(t) {
     state.logType = t;
-    $('#t-hangbtn').setAttribute('aria-pressed', t === 'hang');
-    $('#t-kraftbtn').setAttribute('aria-pressed', t === 'kraft');
-    $('#f-hang').hidden = t !== 'hang';
-    $('#f-kraft').hidden = t !== 'kraft';
+    $$('[data-lt]').forEach(b => b.setAttribute('aria-pressed', b.dataset.lt === t));
+    Object.entries(LOG_FORMS).forEach(([k, sel]) => { $(sel).hidden = k !== t; });
   }
-  $('#t-hangbtn').addEventListener('click', () => setLogType('hang'));
-  $('#t-kraftbtn').addEventListener('click', () => setLogType('kraft'));
+  $$('[data-lt]').forEach(b => b.addEventListener('click', () => setLogType(b.dataset.lt)));
 
   function sorted() { return state.entries.slice().sort((a, b) => b.ts - a.ts); }
   const edgesOf = e => Array.isArray(e.edges) && e.edges.length ? e.edges : Array(e.sets || 1).fill(e.edge);
@@ -604,9 +633,48 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
     if (await saveEntry(entry, err)) { $('#k-note').value = ''; kraftPrefillNote(null); }
   });
 
-  function resetDates() { $('#h-date').value = todayStr(); $('#k-date').value = todayStr(); }
+  /* ---------- ascents form ---------- */
+  const GRADES = {
+    boulder: ['3', '4', '4+', '5', '5+', '6A', '6A+', '6B', '6B+', '6C', '6C+', '7A', '7A+', '7B', '7B+', '7C', '7C+', '8A', '8A+', '8B', '8B+', '8C', '8C+', '9A'],
+    route: ['3', '4a', '4b', '4c', '5a', '5b', '5c', '6a', '6a+', '6b', '6b+', '6c', '6c+', '7a', '7a+', '7b', '7b+', '7c', '7c+', '8a', '8a+', '8b', '8b+', '8c', '8c+', '9a', '9a+', '9b', '9b+', '9c']
+  };
+  const KIND_LABEL = { boulder: 'Boulder', route: 'Route' };
+  const gradeIdx = (kind, g) => (GRADES[kind] || []).indexOf(g);
+  let ascKind = 'boulder';
+  function lastAscent(kind) { return sorted().find(e => e.type === 'ascent' && (!kind || e.kind === kind)); }
+  function setAscKind(kind, grade) {
+    ascKind = kind;
+    $$('[data-ak]').forEach(b => b.setAttribute('aria-pressed', b.dataset.ak === kind));
+    $('#a-scale').textContent = kind === 'boulder' ? 'Fontainebleau-Skala' : 'Französische Skala';
+    const pick = grade || (lastAscent(kind) || {}).grade || (kind === 'boulder' ? '6A' : '6a');
+    $('#a-grade').innerHTML = GRADES[kind].map(g => `<option${g === pick ? ' selected' : ''}>${esc(g)}</option>`).join('');
+  }
+  $$('[data-ak]').forEach(b => b.addEventListener('click', () => { setAscKind(b.dataset.ak); dirty.ascent = true; }));
+  $('#f-asc').addEventListener('input', () => { dirty.ascent = true; });
+  function fillAreaList() {
+    const areas = [...new Set(sorted().filter(e => e.type === 'ascent' && e.area).map(e => e.area))];
+    $('#arealist').innerHTML = areas.map(a => `<option value="${esc(a)}"></option>`).join('');
+  }
+  function applyAscent(e, withName) {
+    setAscKind(e.kind, e.grade);
+    $('#a-area').value = e.area || '';
+    if (withName) $('#a-name').value = e.name || '';
+  }
+  $('#f-asc').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const err = $('#a-err'); err.textContent = '';
+    const grade = $('#a-grade').value;
+    if (gradeIdx(ascKind, grade) < 0) { err.textContent = 'Wähle einen Grad.'; return; }
+    const entry = {
+      id: newId(), type: 'ascent', ts: dateToTs($('#a-date').value), kind: ascKind, grade,
+      flash: $('#a-flash').checked, name: $('#a-name').value.trim(), area: $('#a-area').value.trim(), note: $('#a-note').value.trim()
+    };
+    if (await saveEntry(entry, err)) { $('#a-name').value = ''; $('#a-note').value = ''; $('#a-flash').checked = false; $('#a-prefill').textContent = ''; }
+  });
 
-  /* Fill both forms from the latest entries once data has arrived, unless the user already typed. */
+  function resetDates() { $('#h-date').value = todayStr(); $('#k-date').value = todayStr(); $('#a-date').value = todayStr(); }
+
+  /* Fill the forms from the latest entries once data has arrived, unless the user already typed. */
   function initialPrefill() {
     if (state.prefilled || !state.loaded) return;
     state.prefilled = true;
@@ -614,11 +682,14 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
     if (h && !dirty.hang) { applyHangFull(h); hangPrefillNote(h); }
     const k = lastKraft(null);
     if (k && !dirty.kraft) { $('#k-ex').value = k.ex; setKraftSets(k.sets); if (k.bw) $('#k-bw').value = k.bw; kraftPrefillNote(k); }
+    const a = lastAscent();
+    if (a && !dirty.ascent) { applyAscent(a); $('#a-prefill').textContent = `Art, Grad und Gebiet vom ${shortDate(a.ts)} übernommen.`; }
   }
 
   function prefill(e) {
     resetDates();
     if (e.type === 'hang') { applyHangFull(e); hangPrefillNote(e); setLogType('hang'); }
+    else if (e.type === 'ascent') { applyAscent(e, true); $('#a-prefill').textContent = ''; setLogType('ascent'); }
     else { $('#k-ex').value = e.ex; setKraftSets(e.sets); if (e.bw) $('#k-bw').value = e.bw; kraftPrefillNote(e); setLogType('kraft'); }
     showTab('log');
     toast('Werte übernommen – anpassen und speichern');
@@ -638,6 +709,12 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
   }
   const gripLabel = e => e.grip + (armOf(e) === '1' ? ' · einarmig' : '');
   function describe(e) {
+    if (e.type === 'ascent') {
+      return {
+        t: `${e.name || KIND_LABEL[e.kind]} · ${e.grade}${e.flash ? ' · Flash' : ''}`,
+        d: [KIND_LABEL[e.kind] + ' ' + e.grade, e.flash ? 'Flash' : '', e.area].filter(Boolean).join(' · ')
+      };
+    }
     if (e.type === 'hang') {
       const timing = e.reps > 1 ? `${fmt(e.hang, 0)} s / ${fmt(e.rest, 0)} s` : `${fmt(e.hang, 0)} s`;
       return { t: `${gripLabel(e)} · ${edgeStr(e)}`, d: `${e.proto} · ${edgesOf(e).length} × ${e.reps} · ${timing} · ${loadStr(e)}${e.rpe ? ' · RPE ' + e.rpe : ''}` };
@@ -723,7 +800,7 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
     const list = Array.isArray(data) ? data : data && Array.isArray(data.entries) ? data.entries : null;
     if (!list) { toast('Die Datei ist keine Griffbuch-Sicherung.'); return; }
     const have = new Set(state.entries.map(e => e.id));
-    const fresh = list.filter(e => e && e.id && (e.type === 'hang' || e.type === 'kraft') && Number.isFinite(e.ts) && !have.has(e.id));
+    const fresh = list.filter(e => e && e.id && (e.type === 'hang' || e.type === 'kraft' || e.type === 'ascent') && Number.isFinite(e.ts) && !have.has(e.id));
     for (const e of fresh) await backend.save(e);
     if (data.bw && !state.bw) { state.bw = data.bw; await backend.saveBw(data.bw); fillBw(); }
     toast(fresh.length ? fresh.length + ' Einträge importiert' : 'Alle Einträge waren schon vorhanden');
@@ -791,18 +868,31 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
 
   function niceStep(raw) { const p = Math.pow(10, Math.floor(Math.log10(raw))); const f = raw / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p; }
   /* Four equal intervals per axis, so the grid lines of all axes line up. */
-  function axisScale(vals) {
+  function axisScale(vals, int) {
     let lo = Math.min(...vals), hi = Math.max(...vals);
+    if (int) {
+      // whole-number ticks (grades, counts), never below zero
+      const step = Math.max(1, Math.ceil((hi - lo) / 4));
+      const a = Math.max(0, lo - Math.floor((4 * step - (hi - lo)) / 2));
+      return { lo: a, hi: a + 4 * step, step };
+    }
     if (lo === hi) { const p = Math.max(1, Math.abs(lo) * 0.1); lo -= p; hi += p; }
     let step = niceStep((hi - lo) / 4), a = Math.floor(lo / step) * step;
     while (a + 4 * step < hi - 1e-9) { step = niceStep(step * 1.5); a = Math.floor(lo / step) * step; }
     return { lo: a, hi: a + 4 * step, step };
   }
 
-  /* series: [{color, metric, points:[{x,y}]}], all non-empty. Axes alternate left/right. */
+  /* series: [{color, metric, points:[{x,y}]}], all non-empty.
+     Series with the same unit share one axis; axes alternate left/right. */
   function chartSVG(series, opt = {}) {
     const W = 340, H = opt.h || 210, AX = 36, pt = 26, pb = 28;
-    const n = series.length, multi = n > 1;
+    const multi = series.length > 1;
+    const axes = [...new Set(series.map(s => s.metric.unit))].map(u => {
+      const ss = series.filter(s => s.metric.unit === u);
+      return { metric: ss[0].metric, color: ss.length === 1 ? ss[0].color : 'var(--ink)', sc: axisScale(ss.flatMap(s => s.points.map(p => p.y)), ss[0].metric.int) };
+    });
+    const axisOf = s => axes.find(a => a.metric.unit === s.metric.unit);
+    const n = axes.length;
     const nl = Math.ceil(n / 2), nr = Math.floor(n / 2);
     const pl = 10 + AX * nl, pr = nr ? 10 + AX * nr : 16;
     const x0 = opt.x0, x1 = opt.x1;
@@ -814,18 +904,21 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
       g += `<line class="grid-l" x1="${pl}" x2="${W - pr}" y1="${y}" y2="${y}"/>`;
     }
     let body = '';
-    series.forEach((s, si) => {
-      const sc = axisScale(s.points.map(p => p.y));
-      const leftSide = si % 2 === 0, level = Math.floor(si / 2);
+    axes.forEach((a, ai) => {
+      const sc = a.sc, m = a.metric;
+      const leftSide = ai % 2 === 0, level = Math.floor(ai / 2);
       const ax = leftSide ? pl - level * AX : W - pr + level * AX;
       const tx = leftSide ? ax - 5 : ax + 5, anchor = leftSide ? 'end' : 'start';
-      const tstyle = multi ? ` style="fill:${s.color}"` : '';
-      if (multi) body += `<line x1="${ax}" x2="${ax}" y1="${pt}" y2="${H - pb}" style="stroke:${s.color};stroke-width:1.5"/>`;
+      const tstyle = n > 1 ? ` style="fill:${a.color}"` : '';
+      if (n > 1) body += `<line x1="${ax}" x2="${ax}" y1="${pt}" y2="${H - pb}" style="stroke:${a.color};stroke-width:1.5"/>`;
       for (let i = 0; i <= 4; i++) {
         const v = sc.lo + i * sc.step;
-        body += `<text x="${tx}" y="${(yAt(v, sc) + 4).toFixed(1)}" text-anchor="${anchor}"${tstyle}>${esc(fmt(v, sc.step < 1 ? 1 : 0))}</text>`;
+        body += `<text x="${tx}" y="${(yAt(v, sc) + 4).toFixed(1)}" text-anchor="${anchor}"${tstyle}>${esc(m.tick ? m.tick(v) : fmt(v, sc.step < 1 ? 1 : 0))}</text>`;
       }
-      body += `<text x="${tx}" y="${pt - 10}" text-anchor="${anchor}"${tstyle}>${esc(s.metric.unit)}</text>`;
+      body += `<text x="${tx}" y="${pt - 10}" text-anchor="${anchor}"${tstyle}>${esc(m.unit)}</text>`;
+    });
+    series.forEach(s => {
+      const sc = axisOf(s).sc;
       const pts = s.points.map(p => [sx(p.x), yAt(p.y, sc)]);
       const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
       if (!multi && pts.length > 1) {
@@ -837,7 +930,7 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
       if (!multi) {
         const lp = pts[pts.length - 1];
         const a2 = lp[0] > W - 60 ? 'end' : 'middle';
-        body += `<text class="val" x="${(a2 === 'end' ? Math.min(lp[0] + 4, W - 2) : lp[0]).toFixed(1)}" y="${Math.max(12, lp[1] - 10).toFixed(1)}" text-anchor="${a2}">${esc(fmt(s.points[s.points.length - 1].y, s.metric.d))} ${esc(s.metric.unit)}</text>`;
+        body += `<text class="val" x="${(a2 === 'end' ? Math.min(lp[0] + 4, W - 2) : lp[0]).toFixed(1)}" y="${Math.max(12, lp[1] - 10).toFixed(1)}" text-anchor="${a2}">${esc(mval(s.metric, s.points[s.points.length - 1].y))}</text>`;
       }
     });
     g += `<text x="${sx(x0).toFixed(1)}" y="${H - 8}" text-anchor="${x1 === x0 ? 'middle' : 'start'}">${esc(shortDate(x0))}</text>`;
@@ -858,7 +951,134 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
     renderProg();
   }));
 
+  /* ---------- ascents progress ---------- */
+  const mval = (m, v) => m.tick ? m.tick(v) : fmt(v, m.d) + ' ' + m.unit;
+  function ascentMetrics(kind) {
+    const G = GRADES[kind], tick = v => G[Math.round(v)] || '';
+    return {
+      grade: { label: 'Höchster Grad', unit: 'Grad', d: 0, int: true, tick },
+      flash: { label: 'Höchster Flash', unit: 'Grad', d: 0, int: true, tick },
+      count: { label: 'Ascents pro Tag', unit: 'Ascents', d: 0, int: true },
+      total: { label: 'Ascents gesamt', unit: 'Ascents', d: 0, int: true, noBest: true }
+    };
+  }
+
+  /* Vertical bars per grade; flashes are the lower, highlighted part of each bar. */
+  function pyramidSVG(kind, list) {
+    const G = GRADES[kind], c = {};
+    list.forEach(e => {
+      const i = gradeIdx(kind, e.grade); if (i < 0) return;
+      c[i] = c[i] || { all: 0, flash: 0 }; c[i].all++; if (e.flash) c[i].flash++;
+    });
+    const idx = Object.keys(c).map(Number);
+    if (!idx.length) return '';
+    const lo = Math.min(...idx), hi = Math.max(...idx), n = hi - lo + 1;
+    const bw = 24, pl = 34, pr = 10, pt = 20, pb = 30, H = 230;
+    const W = Math.max(340, pl + pr + n * 36);
+    const slot = (W - pl - pr) / n;
+    const step = Math.max(1, Math.ceil(Math.max(...idx.map(i => c[i].all)) / 4)), top = step * 4;
+    const yAt = v => pt + (top - v) / top * (H - pt - pb);
+    let s = '';
+    for (let i = 0; i <= 4; i++) {
+      const y = yAt(i * step).toFixed(1);
+      s += `<line class="grid-l" x1="${pl}" x2="${W - pr}" y1="${y}" y2="${y}"/><text x="${pl - 6}" y="${(+y + 4).toFixed(1)}" text-anchor="end">${i * step}</text>`;
+    }
+    for (let k = 0; k < n; k++) {
+      const gi = lo + k, d = c[gi] || { all: 0, flash: 0 };
+      const cx = pl + slot * k + slot / 2, x = (cx - bw / 2).toFixed(1);
+      if (d.all) {
+        const yAll = yAt(d.all), yFl = yAt(d.flash), base = yAt(0);
+        if (d.all > d.flash) s += `<rect x="${x}" y="${yAll.toFixed(1)}" width="${bw}" height="${(yFl - yAll).toFixed(1)}" style="fill:var(--c1)"/>`;
+        if (d.flash) s += `<rect x="${x}" y="${yFl.toFixed(1)}" width="${bw}" height="${(base - yFl).toFixed(1)}" style="fill:var(--c2)"/>`;
+        s += `<text class="val" x="${cx.toFixed(1)}" y="${(yAll - 5).toFixed(1)}" text-anchor="middle">${d.all}</text>`;
+      }
+      s += `<text x="${cx.toFixed(1)}" y="${H - 10}" text-anchor="middle">${esc(G[gi])}</text>`;
+    }
+    const minW = W > 340 ? ` style="min-width:${W}px"` : '';
+    return `<div class="tbl"><svg class="chart" viewBox="0 0 ${W} ${H}"${minW} role="img" aria-label="Pyramide ${esc(KIND_LABEL[kind])}">${s}</svg></div>`;
+  }
+
+  function renderAscentProg() {
+    const card = $('#prog-card');
+    const all = sorted().filter(e => e.type === 'ascent');
+    if (!all.length) {
+      card.innerHTML = `<h2>Fortschritt</h2><div class="empty"><b>Noch keine Ascents</b><span>Trag unter „Eintragen“ → „Ascents“ deine Begehungen ein. Hier erscheinen dann dein Grad-Verlauf und deine Pyramide.</span></div>`;
+      return;
+    }
+    const counts = { boulder: 0, route: 0 };
+    all.forEach(e => { counts[e.kind] = (counts[e.kind] || 0) + 1; });
+    let kind = state.progCat.ascent;
+    if (!kind || !counts[kind]) kind = all[0].kind;
+    state.progCat.ascent = kind;
+    const ms = ascentMetrics(kind);
+    const sel = state.progMetrics.ascent.filter(k => ms[k]);
+    const list = all.filter(e => e.kind === kind).sort((a, b) => a.ts - b.ts);
+
+    // one point per climbing day
+    const days = [];
+    list.forEach(e => { const k = dateKey(e.ts), d = days[days.length - 1]; if (d && d.k === k) d.items.push(e); else days.push({ k, x: new Date(k + 'T12:00:00').getTime(), items: [e] }); });
+    let run = 0;
+    days.forEach(d => {
+      const gi = d.items.map(e => gradeIdx(kind, e.grade)).filter(i => i >= 0);
+      const fi = d.items.filter(e => e.flash).map(e => gradeIdx(kind, e.grade)).filter(i => i >= 0);
+      run += d.items.length;
+      d.v = { grade: gi.length ? Math.max(...gi) : null, flash: fi.length ? Math.max(...fi) : null, count: d.items.length, total: run };
+    });
+    const series = sel.map((k, i) => ({ key: k, metric: ms[k], color: COLORS[i], points: days.filter(d => d.v[k] != null).map(d => ({ x: d.x, y: d.v[k] })) }));
+    const drawn = series.filter(s => s.points.length);
+
+    const kindChips = ['boulder', 'route'].filter(k => counts[k]).map(k => `<button type="button" class="chip" data-akind="${k}" aria-pressed="${k === kind}">${KIND_LABEL[k]} <small>${counts[k]}</small></button>`).join('');
+    const metricChips = Object.entries(ms).map(([k, v]) => {
+      const i = sel.indexOf(k);
+      const dot = i >= 0 ? `<span class="dot" style="background:${COLORS[i]};border-color:${COLORS[i]}"></span>` : '<span class="dot"></span>';
+      return `<button type="button" class="chip" data-ametric="${k}" aria-pressed="${i >= 0}">${dot}${esc(v.label)}</button>`;
+    }).join('');
+
+    let chart;
+    if (!sel.length) {
+      chart = `<div class="empty"><b>Kein Wert ausgewählt</b><span>Tippe oben auf einen oder mehrere Werte.</span></div>`;
+    } else if (!drawn.length) {
+      chart = `<div class="empty"><b>Noch keine Werte</b><span>${sel.includes('flash') ? 'Sobald du einen Flash einträgst, erscheint er hier.' : 'Wähle andere Werte.'}</span></div>`;
+    } else {
+      const layoutSeg = drawn.length > 1 ? `<div class="seg" role="group" aria-label="Darstellung">
+          <button type="button" data-layout="together" aria-pressed="${state.progLayout === 'together'}">Ein Graph</button>
+          <button type="button" data-layout="stacked" aria-pressed="${state.progLayout === 'stacked'}">Untereinander</button>
+        </div>` : '';
+      const legend = series.map(s => {
+        const m = s.metric;
+        if (!s.points.length) return `<div class="lg"><i style="background:${s.color}"></i><div><b>${esc(m.label)}</b><span>Noch keine Werte</span></div></div>`;
+        const ys = s.points.map(p => p.y), last = ys[ys.length - 1];
+        return `<div class="lg"><i style="background:${s.color}"></i><div><b>${esc(m.label)}</b><span>Zuletzt ${esc(mval(m, last))}${m.noBest ? '' : ' · Bestwert ' + esc(mval(m, Math.max(...ys)))} · seit ${esc(shortDate(s.points[0].x))}</span></div></div>`;
+      }).join('');
+      chart = `${layoutSeg}${chartsHTML(drawn, state.progLayout)}<div class="legend">${legend}</div>`;
+    }
+
+    const per = state.pyrPeriod;
+    const from = per === '12m' ? Date.now() - 365 * 864e5 : per === 'year' ? new Date(new Date().getFullYear(), 0, 1).getTime() : 0;
+    const inPer = list.filter(e => e.ts >= from);
+    const nFlash = inPer.filter(e => e.flash).length;
+    const perChips = [['all', 'Gesamt'], ['12m', 'Letzte 12 Monate'], ['year', 'Dieses Jahr']].map(([k, l]) => `<button type="button" class="chip" data-per="${k}" aria-pressed="${k === per}">${l}</button>`).join('');
+    const pyr = inPer.length
+      ? `<p class="prefill" style="margin:0">${inPer.length} ${KIND_LABEL[kind] === 'Boulder' ? 'Boulder' : 'Routen'} · davon ${nFlash} Flash</p>${pyramidSVG(kind, inPer)}
+         <div class="swatches"><span><i style="background:var(--c2)"></i>Flash</span><span><i style="background:var(--c1)"></i>Nicht geflasht</span></div>`
+      : `<div class="empty"><b>Keine Ascents in diesem Zeitraum</b></div>`;
+
+    card.innerHTML = `<h2>Fortschritt</h2>
+      <div class="lbl">Art</div><div class="chips">${kindChips}</div>
+      <div class="lbl">Werte im Verlauf</div><div class="chips">${metricChips}</div>${chart}
+      <h2 style="margin-top:10px">Pyramide</h2><div class="chips">${perChips}</div>${pyr}`;
+    $$('[data-akind]', card).forEach(b => b.addEventListener('click', () => { state.progCat.ascent = b.dataset.akind; renderProg(); }));
+    $$('[data-ametric]', card).forEach(b => b.addEventListener('click', () => {
+      const k = b.dataset.ametric, cur = state.progMetrics.ascent;
+      state.progMetrics.ascent = cur.includes(k) ? cur.filter(x => x !== k) : [...cur, k];
+      renderProg();
+    }));
+    $$('[data-layout]', card).forEach(b => b.addEventListener('click', () => { state.progLayout = b.dataset.layout; renderProg(); }));
+    $$('[data-per]', card).forEach(b => b.addEventListener('click', () => { state.pyrPeriod = b.dataset.per; renderProg(); }));
+  }
+
   function renderProg() {
+    if (state.progType === 'ascent') return renderAscentProg();
     const card = $('#prog-card');
     const type = state.progType;
     const ms = METRICS[type];
@@ -948,6 +1168,7 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
 
   function render() {
     fillExList();
+    fillAreaList();
     initialPrefill();
     if (state.tab === 'hist') renderHist();
     if (state.tab === 'prog') renderProg();
@@ -1064,6 +1285,7 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
   /* ---------- start ---------- */
   resetDates();
   setEdgeRows([20, 20, 20, 20, 20]);
+  setAscKind('boulder');
   addSetRow('8', ''); addSetRow('8', ''); addSetRow('8', '');
   idleDisplay();
   useLocal();
