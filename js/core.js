@@ -33,6 +33,7 @@ function defaultSettings() {
   const lang = (navigator.language || '').toLowerCase().startsWith('de') ? 'de' : 'en';
   return {
     lang, bw: null,
+    lvl: { top: 5, weeks: 8 },
     scales: { boulder: 'font', route: 'french' },
     gym: { boulder: { on: false, min: 1, max: 9, name: '' }, route: { on: false, min: 1, max: 9, name: '' } }
   };
@@ -44,6 +45,7 @@ function loadSettings() {
   return {
     lang: s.lang === 'en' || s.lang === 'de' ? s.lang : d.lang,
     bw: s.bw || null,
+    lvl: { ...d.lvl, ...(s.lvl || {}) },
     scales: { ...d.scales, ...(s.scales || {}) },
     gym: { boulder: { ...d.gym.boulder, ...((s.gym || {}).boulder || {}) }, route: { ...d.gym.route, ...((s.gym || {}).route || {}) } }
   };
@@ -186,7 +188,7 @@ const state = {
   entries: [], prefilled: false,
   tab: 'log', prevTab: 'log', lastLogTab: 'log', logType: 'hang', histFilter: 'all',
   progType: 'hang', progCat: { hang: null, kraft: null, ascent: null, plan: null },
-  progMetrics: { hang: ['edge', 'hangt'], kraft: ['kg', 'reps'], ascent: ['grade', 'flash'] }, progLayout: 'together',
+  progMetrics: { hang: ['edge', 'hangt'], kraft: ['kg', 'reps'], ascent: ['level', 'pts'] }, progLayout: 'together',
   pyrPeriod: 'all',
   planNav: [{ p: 'season' }], planLink: null
 };

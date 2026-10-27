@@ -739,6 +739,8 @@ function renderProg() {
 /* ---------- progress: ascents ---------- */
 function ascentMetrics(sc) {
   return {
+    level: { label: t('m_level'), unit: t('u_grade'), d: 1, int: true, weekly: true, tick: sc.numeric ? (v => fmt(v, 1)) : sc.label },
+    pts: { label: t('m_pts'), unit: t('u_pts'), d: 0, weekly: true },
     grade: { label: t('m_grade'), unit: t('u_grade'), d: 0, int: true, tick: sc.label },
     flash: { label: t('m_flash'), unit: t('u_grade'), d: 0, int: true, tick: sc.label },
     att: { label: t('m_att'), unit: t('u_att'), d: 1, lower: true },
@@ -746,6 +748,29 @@ function ascentMetrics(sc) {
     total: { label: t('m_atotal'), unit: t('u_asc'), d: 0, int: true, noBest: true }
   };
 }
+/* Points grow by a fixed factor per grade step (rock 1.25, gym numbers 1.5).
+   A flash adds half a step (√factor), so it always stays below the next grade. */
+const ptsFactor = e => (e.gnum != null ? 1.5 : 1.25);
+function ascPoints(e, kind) {
+  const f = ptsFactor(e);
+  const v = e.gnum != null ? e.gnum - (S.gym[kind].min || 0) : e.diff;
+  return 10 * Math.pow(f, v) * (e.flash ? Math.sqrt(f) : 1);
+}
+/* One value per calendar week up to now: level = average of the top N grades in the
+   window ending that week, pts = sum of points climbed in that week. */
+function ascentWeekly(list, kind, sc) {
+  if (!list.length) return [];
+  const out = [], lastMon = mondayOf(todayStr());
+  const days = list.map(e => ({ d: dateKey(e.ts), e }));
+  for (let m = mondayOf(days[0].d); m <= lastMon; m = addDays(m, 7)) {
+    const end = addDays(m, 7), from = addDays(end, -7 * S.lvl.weeks);
+    const top = days.filter(x => x.d >= from && x.d < end).map(x => sc.value(x.e)).sort((a, b) => b - a).slice(0, S.lvl.top);
+    const pts = days.filter(x => x.d >= m && x.d < end).reduce((a, x) => a + ascPoints(x.e, kind), 0);
+    out.push({ x: parseDay(m).getTime(), level: top.length ? avg(top) : null, pts });
+  }
+  return out;
+}
+
 /* Vertical bars per grade; flashes are the lower, highlighted part of each bar. */
 function pyramidSVG(sc, list) {
   const c = {};
@@ -812,8 +837,21 @@ function renderAscentProg() {
     run += d.items.length;
     d.v = { grade: Math.max(...gi), flash: fi.length ? Math.max(...fi) : null, att: at.length ? avg(at) : null, count: d.items.length, total: run };
   });
-  const series = sel.map((k, i) => ({ key: k, metric: ms[k], color: COLORS[i], points: days.filter(d => d.v[k] != null).map(d => ({ x: d.x, y: d.v[k] })) }));
+  const weekly = sel.some(k => ms[k] && ms[k].weekly) ? ascentWeekly(list, kind, sc) : [];
+  const series = sel.map((k, i) => ({
+    key: k, metric: ms[k], color: COLORS[i],
+    points: ms[k].weekly
+      ? weekly.filter(w => w[k] != null).map(w => ({ x: w.x, y: w[k] }))
+      : days.filter(d => d.v[k] != null).map(d => ({ x: d.x, y: d.v[k] }))
+  }));
   const drawn = series.filter(s => s.points.length);
+  const stepper = (k, v) => `<div class="stepper"><button type="button" data-lvl="${k}" data-d="-1" aria-label="−">−</button><output>${v}</output><button type="button" data-lvl="${k}" data-d="1" aria-label="+">+</button></div>`;
+  const lvlCfg = sel.includes('level')
+    ? `<div class="lbl">${esc(t('lvl_cfg'))}</div>
+       <div class="row" style="flex-wrap:nowrap">${stepper('top', S.lvl.top)}<span style="flex:1;min-width:0">${esc(t('lvl_top'))}</span></div>
+       <div class="row" style="flex-wrap:nowrap">${stepper('weeks', S.lvl.weeks)}<span style="flex:1;min-width:0">${esc(t('lvl_weeks'))}</span></div>
+       ${hintP(t('lvl_hint', { n: S.lvl.top, w: S.lvl.weeks }))}` : '';
+  const ptsHint = sel.includes('pts') ? hintP(t('pts_hint', { f: fmt(sc.numeric ? 1.5 : 1.25, 2) })) : '';
 
   const catChips = ASC_CATS.filter(([k, e]) => counts[k + '|' + e]).map(([k, e]) => `<button type="button" class="chip" data-acat="${k}|${e}" aria-pressed="${k + '|' + e === cat}">${esc(t(k))} · ${esc(t(e))} <small>${counts[k + '|' + e]}</small></button>`).join('');
   let chart;
@@ -829,6 +867,7 @@ function renderAscentProg() {
     }).join('');
     chart = `${layoutSegHTML(drawn.length)}${chartsHTML(drawn, state.progLayout)}<div class="legend">${legend}</div>${sel.includes('att') ? hintP(t('att_lower_hint')) : ''}`;
   }
+  chart += lvlCfg + ptsHint;
 
   const per = state.pyrPeriod;
   const from = per === '12m' ? Date.now() - 365 * 864e5 : per === 'year' ? new Date(new Date().getFullYear(), 0, 1).getTime() : 0;
@@ -849,6 +888,11 @@ function renderAscentProg() {
   $$('[data-ametric]', card).forEach(b => b.addEventListener('click', () => toggleMetric('ascent', b.dataset.ametric)));
   $$('[data-layout]', card).forEach(b => b.addEventListener('click', () => { state.progLayout = b.dataset.layout; renderProg(); }));
   $$('[data-per]', card).forEach(b => b.addEventListener('click', () => { state.pyrPeriod = b.dataset.per; renderProg(); }));
+  $$('[data-lvl]', card).forEach(b => b.addEventListener('click', () => {
+    const k = b.dataset.lvl, max = k === 'top' ? 30 : 52;
+    S.lvl[k] = Math.min(max, Math.max(1, S.lvl[k] + Number(b.dataset.d)));
+    saveSettings(); renderProg();
+  }));
 }
 
 function render() {
