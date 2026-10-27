@@ -101,11 +101,24 @@ function crumbLabel(pg) {
 function renderPlan() {
   let pg = navTop();
   while (state.planNav.length > 1 && pg.id && !findBlock(pg.id)) { state.planNav.pop(); pg = navTop(); }
-  const crumbs = state.planNav.length > 1
-    ? `<div class="crumbs"><button type="button" class="back" data-act="back">${esc(t('back'))}</button><span>${state.planNav.slice(1).map(p => esc(crumbLabel(p))).join(' › ')}</span></div>` : '';
+  const last = state.planNav.length - 1;
+  const crumbs = last > 0
+    ? `<nav class="crumbtabs" aria-label="${esc(t('levels'))}">${state.planNav.map((p, i) => `${i ? '<span class="sep" aria-hidden="true">›</span>' : ''}<button type="button" data-act="crumb" data-n="${i}"${i === last ? ' aria-current="page"' : ''}>${esc(crumbLabel(p))}</button>`).join('')}</nav>` : '';
   const pages = { season: seasonHTML, block: blockHTML, blockform: blockFormHTML, newsess: newSessHTML, session: sessionHTML, item: itemHTML, templates: templatesHTML, fromentry: fromEntryHTML };
   $('#v-plan').innerHTML = crumbs + (pages[pg.p] || seasonHTML)(pg);
   const rows = $('#pi-rows'); if (rows) numberRows(rows);
+}
+/* Leaving an exercise editor (by level tab or the phone's back button) keeps valid changes. */
+function saveOpenItem() {
+  const pg = navTop();
+  if (pg.p === 'item' && editableSessions(findBlock(pg.id), pg.w)) { const it = currentItem(pg); if (it && readItem(it)) savePlan(); }
+}
+function planUp() { saveOpenItem(); goBack(); }
+function planToLevel(n) {
+  if (n >= state.planNav.length - 1) return;
+  saveOpenItem();
+  state.planNav = state.planNav.slice(0, n + 1);
+  renderPlan(); window.scrollTo(0, 0);
 }
 
 /* ---------- season: one row per week ---------- */
@@ -510,11 +523,7 @@ const ctxOf = el => {
   return { b, w, s, it: s && el.dataset.i ? s.items.find(i => i.id === el.dataset.i) : null };
 };
 const ACTS = {
-  back() {
-    const pg = navTop();
-    if (pg.p === 'item' && editableSessions(findBlock(pg.id), pg.w)) { const it = currentItem(pg); if (it && readItem(it)) savePlan(); }
-    goBack();
-  },
+  crumb: el => planToLevel(Number(el.dataset.n)),
   newblock: el => go({ p: 'blockform', start: el.dataset.start }),
   templates: () => go({ p: 'templates' }),
   openweek: el => go({ p: 'block', id: el.dataset.b, w: Number(el.dataset.w) }),
@@ -586,7 +595,7 @@ const CHG = {
     s[f] = f === 'day' ? Number(el.value) : f === 'type' ? el.value : el.value.trim();
     savePlan();
     if (f === 'type' || f === 'day') renderPlan();
-    else if (f === 'name' && $('.crumbs span')) $('.crumbs span').textContent = state.planNav.slice(1).map(crumbLabel).join(' › ');
+    else if (f === 'name' && $('.crumbtabs [aria-current="page"]')) $('.crumbtabs [aria-current="page"]').textContent = crumbLabel(pg);
   },
   fe(el) { const pg = navTop(), k = el.dataset.k; pg[k] = k === 'w' ? parseW(el.value) : k === 'd' ? Number(el.value) : el.value; renderPlan(); }
 };
