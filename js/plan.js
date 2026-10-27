@@ -51,6 +51,121 @@ function itemFromEntry(e) {
   if (e.type === 'kraft') return { id: newId('i'), kind: 'kraft', ex: e.ex, sets: clone(e.sets), note: '' };
   return { id: newId('i'), kind: 'climb', text: e.desc || e.note || '' };
 }
+/* ---------- automatic progression ----------
+   planned weight = latest test value before that week × intensity, rounded to 0.5 kg.
+   Intensity starts at auto.start % and rises auto.inc points per week; the deload week drops to
+   start − 10 % with a third fewer sets. Hangboard tests only count for the same grip, hand and edge. */
+const PROG = {
+  max: { hang: [85, 2.5], kraft: [82.5, 2.5], reps: 5 },
+  perf: { hang: [85, 2.5], kraft: [82.5, 2.5], reps: 5 },
+  power: { hang: [80, 2.5], kraft: [70, 0], reps: 3 },
+  pe: { hang: [60, 2.5], kraft: [60, 2.5], reps: 12 },
+  endu: { hang: [55, 2], kraft: [67.5, 2], reps: 10 },
+  base: { hang: [55, 2], kraft: [67.5, 2], reps: 10 },
+  tech: { hang: [55, 2], kraft: [67.5, 2], reps: 10 },
+  recov: { hang: [50, 0], kraft: [50, 0], reps: 10 }
+};
+const progGoal = b => (b && PROG[b.goal] ? b.goal : 'max');
+function autoDefaults(it, b) {
+  const [start, inc] = PROG[progGoal(b)][it.kind === 'hang' ? 'hang' : 'kraft'];
+  return { on: true, start, inc };
+}
+const round05 = x => Math.round(x * 2) / 2;
+const isAuto = it => !!(it.auto && it.auto.on && (it.kind === 'hang' || it.kind === 'kraft'));
+/* Latest hangboard test on or before `day` for this grip/hand/edge; otherwise an estimate from
+   max-hang style entries (1 rep, 7–13 s) of the six weeks before, assuming they were done at ~90 %. */
+function hangBaseline(it, edge, day) {
+  const arm = armOf(it);
+  const match = e => e.type === 'hang' && e.grip === it.grip && armOf(e) === arm && e.bw && dateKey(e.ts) <= day;
+  const test = sorted().find(e => match(e) && e.test && hangTestTotal(e).edge === edge);
+  if (test) return { total: hangTestTotal(test).total, bw: test.bw, date: test.ts, est: false };
+  const from = addDays(day, -42);
+  let best = null;
+  sorted().filter(e => match(e) && !e.test && dateKey(e.ts) >= from && e.reps === 1 && e.hang >= 7 && e.hang <= 13).forEach(e => {
+    const ls = loadsOf(e);
+    edgesOf(e).forEach((ed, i) => { if (ed === edge && (!best || e.bw + ls[i] > best.total)) best = { total: e.bw + ls[i], bw: e.bw, date: e.ts }; });
+  });
+  return best ? { ...best, total: best.total / 0.9, est: true } : null;
+}
+/* Latest strength test on or before `day`; otherwise the best estimated 1RM of the six weeks before. */
+function kraftBaseline(it, day) {
+  const match = e => e.type === 'kraft' && normEx(e.ex) === normEx(it.ex) && dateKey(e.ts) <= day;
+  const test = sorted().find(e => match(e) && e.test && kraftOrm(e));
+  if (test) return { ...kraftOrm(test), date: test.ts, est: false };
+  const from = addDays(day, -42);
+  let best = null;
+  sorted().filter(e => match(e) && dateKey(e.ts) >= from).forEach(e => { const o = kraftOrm(e); if (o && (!best || o.total > best.total)) best = { ...o, date: e.ts }; });
+  return best ? { ...best, est: true } : null;
+}
+/* The concrete exercise for week w of block b (template items stay as they are). */
+function plannedItem(it, b, w) {
+  if (!isAuto(it) || w === 'tpl') return { it, auto: false };
+  const day = addDays(b.start, w * 7), deload = isDeload(b, w);
+  const pct = deload ? it.auto.start - 10 : it.auto.start + w * it.auto.inc;
+  const x = clone(it);
+  let missing = false, est = false, base = null;
+  if (it.kind === 'hang') {
+    const ed = edgesOf(it);
+    x.loads = ed.map(edge => {
+      const bl = hangBaseline(it, edge, day);
+      if (!bl) { missing = true; return 0; }
+      base = base || bl; est = est || bl.est;
+      return round05(bl.total * pct / 100 - (S.bw || bl.bw));
+    });
+    if (deload) { const n = Math.max(1, Math.round(ed.length * 2 / 3)); x.edges = ed.slice(0, n); x.loads = x.loads.slice(0, n); }
+    x.edges = x.edges || ed; x.sets = x.edges.length;
+  } else {
+    const bl = kraftBaseline(it, day);
+    if (!bl) missing = true;
+    else {
+      base = bl; est = bl.est;
+      const kg = round05(bl.total * pct / 100 - (bl.bwex ? (S.bw || bl.bw) : 0));
+      x.sets = it.sets.map(s => ({ r: s.r, kg }));
+    }
+    if (deload) x.sets = x.sets.slice(0, Math.max(1, Math.round(it.sets.length * 2 / 3)));
+  }
+  return { it: x, auto: true, pct, missing, est, base, deload };
+}
+/* One summary line for an exercise as planned in week w. */
+function itemLine(it, b, w) {
+  if (!isAuto(it)) return itemSummary(it);
+  if (w === 'tpl') {
+    const rule = t('auto_rule', { start: fmt(it.auto.start, 1), inc: fmt(it.auto.inc, 1) });
+    if (it.kind === 'hang') return { t: `${gripLabel(it)} · ${edgeStr(it)}`, d: `${nameOf(PROTOS, it.proto)} · ${edgesOf(it).length} × ${it.reps} · ${hangTiming(it)} · ${rule}` };
+    return { t: it.ex || t('it_kraft'), d: `${it.sets.length} × ${it.sets.map(s => s.r).join('/')} ${t('u_reps')} · ${rule}` };
+  }
+  const p = plannedItem(it, b, w), x = itemSummary(p.it);
+  if (p.missing) return { t: x.t, d: t('auto_missing') };
+  return { t: x.t, d: `${x.d} · ${fmt(p.pct, 1)} %${p.est ? ' (' + t('auto_est') + ')' : ''}${p.deload ? ' · ' + t('deload') : ''}` };
+}
+function autoSectionHTML(it, b) {
+  const on = isAuto(it);
+  let html = `<label class="check"><input type="checkbox" id="pi-auto" data-chg="piauto"${on ? ' checked' : ''}><span><b>${esc(t('auto_on'))}</b><span class="hint">${esc(t('auto_hint'))}</span></span></label>`;
+  if (!on) return html;
+  const today = todayStr();
+  let base;
+  if (it.kind === 'hang') {
+    const edge = edgesOf(it)[0], bl = hangBaseline(it, edge, today);
+    base = bl ? `${t(bl.est ? 'auto_base_est' : 'auto_base_test', { date: shortDate(bl.date) })}: ${fmt(bl.total)} kg (${fmt(bl.total / bl.bw * 100, 0)} ${t('pctbw')})`
+      : t('auto_missing_hang', { what: `${gripLabel(it)} · ${fmt(edge, 1)} mm` });
+  } else {
+    const bl = kraftBaseline(it, today);
+    base = bl ? `${t(bl.est ? 'auto_base_est' : 'auto_base_test', { date: shortDate(bl.date) })}: ${t('test_orm', { kg: bl.bwex ? signed(bl.total - (S.bw || bl.bw)) : fmt(bl.total) })}`
+      : t('auto_missing_kraft', { what: it.ex || '–' });
+  }
+  const weeks = Array.from({ length: b.weeks }, (_, w) => {
+    const p = plannedItem(it, b, w);
+    const v = p.missing ? '–' : it.kind === 'hang' ? signed(p.it.loads[0]) + ' kg' : (p.it.sets[0] ? signed(p.it.sets[0].kg) + ' kg' : '–');
+    return `W${w + 1}${p.deload ? ' D' : ''}: ${v}`;
+  }).join(' · ');
+  return html + `<div class="grid">
+      <label class="f"><span>${esc(t('auto_start'))}</span><span class="hint">${esc(t('auto_of_test'))}</span><input type="number" id="pi-start" data-chg="piautocfg" inputmode="decimal" step="0.5" value="${esc(it.auto.start)}"></label>
+      <label class="f"><span>${esc(t('auto_inc'))}</span><span class="hint">${esc(t('auto_inc_hint'))}</span><input type="number" id="pi-inc" data-chg="piautocfg" inputmode="decimal" step="0.5" value="${esc(it.auto.inc)}"></label>
+    </div>
+    <div class="banner"><span>${esc(base)}</span><span><b>${esc(t('auto_preview'))}:</b> ${esc(weeks)}</span></div>
+    ${hintP(t('auto_goal', { goal: goalName(b) }))}${hintP(t('auto_note'))}`;
+}
+
 const reid = list => list.map(s => ({ ...clone(s), id: newId('s'), items: (s.items || []).map(i => ({ ...clone(i), id: newId('i') })) }));
 function dupBlock(b) {
   let start = blockEnd(b), guard = 0;
@@ -278,7 +393,7 @@ function sessionHTML(pg) {
     ? `<div class="row" style="justify-content:space-between"><span>${esc(dayDate(date))}</span><span class="row"><span class="prefill">${esc(t('se_done'))}</span><button type="button" class="chk" data-act="toggledone" ${attrs} aria-pressed="${isDone(date, s.id)}" aria-label="${esc(t('se_done'))}">✓</button></span></div>` : '';
   const items = s.items.length
     ? `<div class="items">${s.items.map(it => {
-        const x = itemSummary(it), canLog = date && (it.kind === 'hang' || it.kind === 'kraft');
+        const x = itemLine(it, b, pg.w), canLog = date && (it.kind === 'hang' || it.kind === 'kraft');
         return `<div class="item"><button type="button" class="open" data-act="openitem" data-i="${it.id}"><span class="st">${esc(x.t)}</span><span class="sd">${esc(x.d)}</span></button>
           ${canLog ? `<button type="button" class="btn ghost small" data-act="logitem" ${attrs} data-i="${it.id}">${esc(t('se_log'))}</button>` : '<span></span>'}</div>`;
       }).join('')}</div>`
@@ -296,17 +411,17 @@ function sessionHTML(pg) {
 
 /* ---------- exercise editors ---------- */
 let piCounter = 0;
-function piRow(a, b, kind) {
+function piRow(a, b, kind, auto) {
   piCounter++;
   const [ca, cb, la, lb, sa] = kind === 'hang' ? ['ed', 'ld', 'edge_mm', 'load_kg', '1'] : ['r', 'kg', 'reps_short', 'addkg', '1'];
   return `<div class="setrow"><span class="n"></span>
     <input class="${ca}" id="pi-a-${piCounter}" type="number" inputmode="decimal" step="${sa}" aria-label="${esc(t(la))}" value="${esc(a)}">
-    <input class="${cb}" id="pi-b-${piCounter}" type="number" inputmode="decimal" step="0.5" placeholder="0" aria-label="${esc(t(lb))}" value="${esc(b)}">
+    <input class="${cb}" id="pi-b-${piCounter}" type="number" inputmode="decimal" step="0.5" placeholder="${auto ? 'auto' : '0'}" aria-label="${esc(t(lb))}" value="${auto ? '' : esc(b)}"${auto ? ' disabled' : ''}>
     <button type="button" class="x" data-act="pi-delrow" aria-label="−">×</button></div>`;
 }
-function hangEditorHTML(it) {
+function hangEditorHTML(it, b) {
   const opts = (list, cur) => list.map(x => `<option value="${x.id}"${x.id === cur ? ' selected' : ''}>${esc(x[S.lang])}</option>`).join('');
-  const ls = loadsOf(it);
+  const ls = loadsOf(it), auto = isAuto(it);
   return `<div class="grid">
       <label class="f"><span>${esc(t('proto'))}</span><select id="pi-proto">${opts(PROTOS, it.proto)}</select></label>
       <label class="f"><span>${esc(t('grip'))}</span><select id="pi-grip">${opts(GRIPS, it.grip)}</select></label>
@@ -316,16 +431,19 @@ function hangEditorHTML(it) {
       <label class="f"><span>${esc(t('reps'))}</span><span class="hint">${esc(t('h_perset'))}</span><input type="number" id="pi-reps" inputmode="numeric" min="1" value="${esc(it.reps)}"></label>
     </div>
     <div class="sets"><div class="sethead"><span>${esc(t('set'))}</span><span>${esc(t('edge_mm'))}</span><span>${esc(t('load_kg'))}</span><span></span></div>
-      <div class="sets" id="pi-rows">${edgesOf(it).map((e, i) => piRow(e, ls[i], 'hang')).join('')}</div>
-      ${hintP(t('h_load_hint'))}
+      <div class="sets" id="pi-rows">${edgesOf(it).map((e, i) => piRow(e, ls[i], 'hang', auto)).join('')}</div>
+      ${auto ? '' : hintP(t('h_load_hint'))}
       <div class="row"><button type="button" class="btn ghost small" data-act="pi-addrow" data-k="hang">${esc(t('add_set'))}</button></div></div>
+    ${autoSectionHTML(it, b)}
     <label class="f"><span>${esc(t('note'))}</span><textarea id="pi-note">${esc(it.note || '')}</textarea></label>`;
 }
-function kraftEditorHTML(it) {
-  return `<label class="f"><span>${esc(t('exercise'))}</span><input id="pi-ex" list="exlist" value="${esc(it.ex || '')}" placeholder="${esc(t('ph_ex'))}" autocomplete="off"></label>
+function kraftEditorHTML(it, b) {
+  const auto = isAuto(it);
+  return `<label class="f"><span>${esc(t('exercise'))}</span><input id="pi-ex" list="exlist" value="${esc(it.ex || '')}" placeholder="${esc(t('ph_ex'))}" autocomplete="off" data-chg="piautocfg"></label>
     <div class="sets"><div class="sethead"><span>${esc(t('set'))}</span><span>${esc(t('reps_short'))}</span><span>${esc(t('addkg'))}</span><span></span></div>
-      <div class="sets" id="pi-rows">${(it.sets || []).map(s => piRow(s.r, s.kg || '', 'kraft')).join('')}</div>
+      <div class="sets" id="pi-rows">${(it.sets || []).map(s => piRow(s.r, s.kg || '', 'kraft', auto)).join('')}</div>
       <div class="row"><button type="button" class="btn ghost small" data-act="pi-addrow" data-k="kraft">${esc(t('add_set'))}</button></div></div>
+    ${autoSectionHTML(it, b)}
     <label class="f"><span>${esc(t('note'))}</span><textarea id="pi-note">${esc(it.note || '')}</textarea></label>`;
 }
 function itemHTML(pg) {
@@ -336,7 +454,7 @@ function itemHTML(pg) {
     const x = itemSummary(it);
     return `<div class="card"><h2>${title}</h2><p style="margin:0"><b>${esc(x.t)}</b></p>${hintP(x.d)}<div class="banner">${esc(t('se_readonly'))}</div></div>`;
   }
-  const body = it.kind === 'hang' ? hangEditorHTML(it) : it.kind === 'kraft' ? kraftEditorHTML(it)
+  const body = it.kind === 'hang' ? hangEditorHTML(it, b) : it.kind === 'kraft' ? kraftEditorHTML(it, b)
     : `<label class="f"><span>${esc(t('it_climb'))}</span><textarea id="pi-text" rows="5" placeholder="${esc(t('ph_climb'))}">${esc(it.text || '')}</textarea></label>`;
   return `<div class="card"><h2>${title}</h2>${body}<p class="err" id="pi-err"></p>
     <button type="button" class="btn" data-act="saveitem">${esc(t('it_save'))}</button>
@@ -346,6 +464,11 @@ function itemHTML(pg) {
 function readItem(it) {
   const err = $('#pi-err');
   if (it.kind === 'climb') { it.text = $('#pi-text').value.trim(); return true; }
+  if (it.auto && $('#pi-start')) {
+    const st = parseFloat($('#pi-start').value), inc = parseFloat($('#pi-inc').value);
+    if (Number.isFinite(st) && st > 0) it.auto.start = st;
+    if (Number.isFinite(inc)) it.auto.inc = inc;
+  }
   const rows = $$('#pi-rows .setrow').map(r => [parseFloat(r.children[1].value), parseFloat(r.children[2].value)]);
   if (it.kind === 'hang') {
     if (!rows.length) { err.textContent = t('e_sets'); return false; }
@@ -355,14 +478,18 @@ function readItem(it) {
     Object.assign(it, {
       proto: $('#pi-proto').value, grip: $('#pi-grip').value, arm: $('#pi-arm').value, hang,
       rest: parseFloat($('#pi-rest').value) || 0, reps: Math.max(1, Math.round(parseFloat($('#pi-reps').value) || 1)),
-      edges: rows.map(r => r[0]), loads: rows.map(r => (Number.isFinite(r[1]) ? r[1] : 0)), note: $('#pi-note').value.trim()
+      edges: rows.map(r => r[0]),
+      loads: isAuto(it) ? rows.map((r, i) => loadsOf(it)[i] ?? 0) : rows.map(r => (Number.isFinite(r[1]) ? r[1] : 0)),
+      note: $('#pi-note').value.trim()
     });
     it.sets = it.edges.length;
     return true;
   }
   const ex = $('#pi-ex').value.trim();
   if (!ex) { err.textContent = t('e_ex'); return false; }
-  const sets = rows.filter(([r]) => Number.isFinite(r) && r > 0).map(([r, kg]) => ({ r: Math.round(r), kg: Number.isFinite(kg) ? kg : 0 }));
+  const prevKg = i => (it.sets && it.sets[i] ? it.sets[i].kg || 0 : 0);
+  const sets = rows.map((row, i) => [...row, i]).filter(([r]) => Number.isFinite(r) && r > 0)
+    .map(([r, kg, i]) => ({ r: Math.round(r), kg: isAuto(it) ? prevKg(i) : (Number.isFinite(kg) ? kg : 0) }));
   if (!sets.length) { err.textContent = t('e_kset'); return false; }
   Object.assign(it, { ex, sets, note: $('#pi-note').value.trim() });
   return true;
@@ -419,18 +546,22 @@ function addEntryToPlan(pg) {
 }
 
 /* ---------- plan → logbook ---------- */
-function logItem(b, w, s, it) {
-  const date = sessDate(b, w, s);
+function logItem(b, w, s, plain) {
+  const date = sessDate(b, w, s), isTest = typeFam(s.type) === 'test';
+  const it = plannedItem(plain, b, w).it;
   resetDates();
   if (it.kind === 'hang') {
     applyHangFull({ ...it, bw: S.bw }); hangPrefillNote(null);
+    $('#h-test').checked = isTest;
     $('#h-date').value = date; setLogType('hang');
   } else {
     $('#k-ex').value = it.ex || '';
     setKraftSets(it.sets && it.sets.length ? it.sets : [{ r: '', kg: '' }]); kraftPrefillNote(null);
+    setKraftTest(isTest);
     if (S.bw) $('#k-bw').value = S.bw;
     $('#k-date').value = date; setLogType('kraft');
   }
+  it.id = plain.id;
   state.planLink = { kind: it.kind, b: b.id, w, s: s.id, i: it.id, date, label: sessLabel(s) };
   showTab('log'); renderPlanLink();
   toast(t('prefilled_toast'));
@@ -462,7 +593,7 @@ function todaySessHTML(b, w, s) {
   const date = sessDate(b, w, s), done = isDone(date, s.id);
   const attrs = `data-b="${b.id}" data-w="${w}" data-s="${s.id}"`;
   const items = s.items.map(it => {
-    const x = itemSummary(it), canLog = it.kind === 'hang' || it.kind === 'kraft';
+    const x = itemLine(it, b, w), canLog = it.kind === 'hang' || it.kind === 'kraft';
     return `<div class="today-item"><span><b>${esc(x.t)}</b><br><span class="prefill">${esc(x.d)}</span></span>
       ${canLog ? `<button type="button" class="btn small ghost" data-act="logitem" ${attrs} data-i="${it.id}">${esc(t('se_log'))}</button>` : ''}</div>`;
   }).join('');
@@ -579,7 +710,8 @@ const ACTS = {
     const wrap = $('#pi-rows'), last = wrap.lastElementChild;
     const a = last ? last.children[1].value : (el.dataset.k === 'hang' ? '20' : '8');
     const b = last ? last.children[2].value : '';
-    wrap.insertAdjacentHTML('beforeend', piRow(a, b, el.dataset.k)); numberRows(wrap);
+    const it = currentItem(navTop());
+    wrap.insertAdjacentHTML('beforeend', piRow(a, b, el.dataset.k, it && isAuto(it))); numberRows(wrap);
   },
   'pi-delrow'(el) { const wrap = $('#pi-rows'); el.closest('.setrow').remove(); numberRows(wrap); },
   deltpl(el) { if (!armed(el, t('del_sure'))) return; P.templates = P.templates.filter(x => x.id !== el.dataset.t); savePlan(); renderPlan(); },
@@ -597,7 +729,21 @@ const CHG = {
     if (f === 'type' || f === 'day') renderPlan();
     else if (f === 'name' && $('.crumbtabs [aria-current="page"]')) $('.crumbtabs [aria-current="page"]').textContent = crumbLabel(pg);
   },
-  fe(el) { const pg = navTop(), k = el.dataset.k; pg[k] = k === 'w' ? parseW(el.value) : k === 'd' ? Number(el.value) : el.value; renderPlan(); }
+  fe(el) { const pg = navTop(), k = el.dataset.k; pg[k] = k === 'w' ? parseW(el.value) : k === 'd' ? Number(el.value) : el.value; renderPlan(); },
+  /* Turning automatic weights on uses the block goal's defaults; strength reps follow the goal too. */
+  piauto(el) {
+    const pg = navTop(), it = currentItem(pg), b = findBlock(pg.id);
+    if (!it) return;
+    readItem(it);
+    if (el.checked) {
+      const keep = it.auto && it.auto.start != null ? { start: it.auto.start, inc: it.auto.inc } : {};
+      const fresh = !it.auto;
+      it.auto = { ...autoDefaults(it, b), ...keep, on: true };
+      if (it.kind === 'kraft' && fresh) it.sets = it.sets.map(s => ({ ...s, r: PROG[progGoal(b)].reps }));
+    } else if (it.auto) it.auto.on = false;
+    savePlan(); renderPlan();
+  },
+  piautocfg() { const it = currentItem(navTop()); if (!it) return; readItem(it); savePlan(); renderPlan(); }
 };
 document.addEventListener('click', ev => {
   const el = ev.target.closest('[data-act]');

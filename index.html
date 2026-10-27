@@ -59,6 +59,7 @@
         <label class="f"><span data-i="reps">Wiederholungen</span><span class="hint" data-i="h_perset">pro Satz</span><input type="number" id="h-reps" inputmode="numeric" min="1" step="1" value="1"></label>
         <label class="f"><span data-i="bw">Körpergewicht</span><span class="hint" data-i="h_bw">kg, für % KG</span><input type="number" id="h-bw" inputmode="decimal" step="0.1" placeholder="68"></label>
         <label class="f full"><span data-i="rpe">Anstrengung</span><span class="hint" data-i="h_rpe">RPE 1–10, optional</span><input type="number" id="h-rpe" inputmode="numeric" min="1" max="10" step="1"></label>
+        <label class="check full"><input type="checkbox" id="h-test"><span><b data-i="test_mark">Als Test markieren</b><span class="hint" data-i="test_hang_hint"></span></span></label>
       </div>
       <div class="sets">
         <div class="sethead"><span data-i="set">Satz</span><span data-i="edge_mm">Leiste (mm)</span><span data-i="load_kg">Zusatz (kg)</span><span></span></div>
@@ -78,6 +79,8 @@
         <label class="f"><span data-i="date">Datum</span><input type="date" id="k-date"></label>
         <label class="f"><span data-i="bw">Körpergewicht</span><span class="hint" data-i="h_bw_opt">kg, optional</span><input type="number" id="k-bw" inputmode="decimal" step="0.1" placeholder="68"></label>
         <label class="f full"><span data-i="exercise">Übung</span><input id="k-ex" list="exlist" data-iph="ph_ex" autocomplete="off"></label>
+        <label class="check full"><input type="checkbox" id="k-test"><span><b data-i="test_mark">Als Test markieren</b><span class="hint" data-i="test_kraft_hint"></span></span></label>
+        <label class="check full" id="k-bwex-l" hidden><input type="checkbox" id="k-bwex"><span><b data-i="bwex">Eigengewicht zählt mit</b><span class="hint" data-i="bwex_hint"></span></span></label>
       </div>
       <datalist id="exlist"></datalist>
       <div class="sets">

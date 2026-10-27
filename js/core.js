@@ -173,7 +173,7 @@ function savePlan() {
 /* Session types: built-in ones by id (texts in I18N as ty_<id>) plus the user's own. fam decides how it is logged. */
 const BASE_TYPES = [
   { id: 'hang', fam: 'hang' }, { id: 'kraft', fam: 'kraft' }, { id: 'cfree', fam: 'climb' }, { id: 'cend', fam: 'climb' },
-  { id: 'cmax', fam: 'climb' }, { id: 'proj', fam: 'climb' }, { id: 'anta', fam: 'other' }, { id: 'rest', fam: 'rest' }
+  { id: 'cmax', fam: 'climb' }, { id: 'proj', fam: 'climb' }, { id: 'anta', fam: 'other' }, { id: 'test', fam: 'test' }, { id: 'rest', fam: 'rest' }
 ];
 const allTypes = () => [...BASE_TYPES, ...P.types.map(x => ({ id: x.id, fam: 'other' }))];
 const typeName = id => {
@@ -181,7 +181,7 @@ const typeName = id => {
   const c = P.types.find(x => x.id === id); return c ? c.name : String(id || '');
 };
 const typeFam = id => (allTypes().find(x => x.id === id) || { fam: 'other' }).fam;
-const TYPE_COLOR = { hang: 'var(--hang)', kraft: 'var(--c1)', climb: 'var(--c3)', other: 'var(--c5)', rest: 'var(--line)' };
+const TYPE_COLOR = { hang: 'var(--hang)', kraft: 'var(--c1)', climb: 'var(--c3)', other: 'var(--c5)', test: 'var(--c4)', rest: 'var(--line)' };
 
 /* ---------- app state ---------- */
 const state = {

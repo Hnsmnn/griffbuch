@@ -125,6 +125,8 @@ $('#f-hang').addEventListener('submit', async ev => {
   if (!rows.length) { err.textContent = t('e_sets'); return; }
   if (rows.some(r => !Number.isFinite(r.e) || r.e <= 0)) { err.textContent = t('e_edge'); return; }
   if (!hang || hang <= 0) { err.textContent = t('e_hang'); return; }
+  const isTest = $('#h-test').checked;
+  if (isTest && !num('#h-bw')) { err.textContent = t('e_test_bw'); return; }
   const edges = rows.map(r => r.e), loads = rows.map(r => (Number.isFinite(r.l) ? r.l : 0));
   const entry = {
     id: newId(), type: 'hang', ts: dateToTs($('#h-date').value),
@@ -134,7 +136,8 @@ $('#f-hang').addEventListener('submit', async ev => {
     hang, rest: num('#h-rest') || 0, reps: Math.max(1, Math.round(num('#h-reps') || 1)),
     bw: num('#h-bw'), rpe: num('#h-rpe'), note: $('#h-note').value.trim()
   };
-  if (await saveEntry(entry, err)) { $('#h-note').value = ''; $('#h-rpe').value = ''; hangPrefillNote(null); }
+  if (isTest) entry.test = true;
+  if (await saveEntry(entry, err)) { $('#h-note').value = ''; $('#h-rpe').value = ''; $('#h-test').checked = false; hangPrefillNote(null); }
 });
 
 /* ---------- strength form ---------- */
@@ -160,7 +163,14 @@ const normEx = s => String(s || '').trim().toLowerCase();
 function lastKraft(ex) { return sorted().find(e => e.type === 'kraft' && (ex == null || normEx(e.ex) === normEx(ex))); }
 let kraftNoteEntry = null;
 function kraftPrefillNote(e) { kraftNoteEntry = e; $('#k-prefill').textContent = e ? t('pf_kraft', { date: shortDate(e.ts) }) : ''; }
+function setKraftTest(on) {
+  $('#k-test').checked = on;
+  $('#k-bwex-l').hidden = !on;
+  if (on) $('#k-bwex').checked = guessBwEx($('#k-ex').value);
+}
+$('#k-test').addEventListener('change', () => setKraftTest($('#k-test').checked));
 $('#k-ex').addEventListener('change', () => {
+  if ($('#k-test').checked) $('#k-bwex').checked = guessBwEx($('#k-ex').value);
   const m = lastKraft($('#k-ex').value);
   if (m) { setKraftSets(m.sets); if (m.bw) $('#k-bw').value = m.bw; }
   kraftPrefillNote(m || null);
@@ -179,8 +189,12 @@ $('#f-kraft').addEventListener('submit', async ev => {
     r: parseFloat(row.querySelector('.r').value), kg: parseFloat(row.querySelector('.kg').value) || 0
   })).filter(s => Number.isFinite(s.r) && s.r > 0).map(s => ({ r: Math.round(s.r), kg: s.kg }));
   if (!sets.length) { err.textContent = t('e_kset'); return; }
-  const entry = { id: newId(), type: 'kraft', ts: dateToTs($('#k-date').value), ex, sets, bw: num('#k-bw'), note: $('#k-note').value.trim() };
-  if (await saveEntry(entry, err)) { $('#k-note').value = ''; kraftPrefillNote(null); }
+  const isTest = $('#k-test').checked, bwex = isTest ? $('#k-bwex').checked : guessBwEx(ex);
+  const bw = num('#k-bw') || (isTest ? S.bw : null);
+  if (isTest && bwex && !bw) { err.textContent = t('e_test_bw'); return; }
+  const entry = { id: newId(), type: 'kraft', ts: dateToTs($('#k-date').value), ex, sets, bw, bwex, note: $('#k-note').value.trim() };
+  if (isTest) entry.test = true;
+  if (await saveEntry(entry, err)) { $('#k-note').value = ''; setKraftTest(false); kraftPrefillNote(null); }
 });
 
 /* ---------- ascents form ---------- */
@@ -313,6 +327,22 @@ const gripLabel = e => nameOf(GRIPS, e.grip) + (armOf(e) === '1' ? ' · ' + t('o
 const attStr = n => (n === 1 ? t('att_1') : t('att_n', { n }));
 const hangTiming = e => (e.reps > 1 ? `${fmt(e.hang, 0)} s / ${fmt(e.rest, 0)} s` : `${fmt(e.hang, 0)} s`);
 const setsStr = sets => (sets || []).map(s => s.kg ? `${s.r} × ${fmt(s.kg)} kg` : `${s.r} ${t('u_reps')}`).join(' · ');
+
+/* ---------- test values ---------- */
+const BWEX_RE = /klimm|pull|chin|dip|lock|lever|einarm|one-arm|muscle|liegest|push|campus/i;
+const guessBwEx = ex => BWEX_RE.test(ex || '');
+const epley = (load, reps) => load * (1 + reps / 30);
+/* Hangboard test: the heaviest set; total = body weight + added weight. */
+function hangTestTotal(e) {
+  const ed = edgesOf(e), ls = loadsOf(e), i = ls.indexOf(Math.max(...ls));
+  return { total: (e.bw || 0) + ls[i], edge: ed[i], load: ls[i] };
+}
+/* Estimated 1RM as total load (body weight included for body-weight exercises), best set by the Epley formula. */
+function kraftOrm(e) {
+  const bwex = e.bwex ?? guessBwEx(e.ex), bw = e.bw || S.bw || 0;
+  if (bwex && !bw) return null;
+  return { total: Math.max(...e.sets.map(s => epley((bwex ? bw : 0) + (s.kg || 0), s.r))), bwex, bw };
+}
 function describe(e) {
   if (e.type === 'ascent') {
     const g = gradeText(e);
@@ -321,8 +351,18 @@ function describe(e) {
       d: [t(e.kind) + ' ' + g, t(e.env === 'gym' ? 'gym' : 'rock'), e.flash ? t('flash') : (e.attempts ? attStr(e.attempts) : ''), e.area].filter(Boolean).join(' · ')
     };
   }
+  const tag = e.test ? t('test_tag') + ' · ' : '';
   if (e.type === 'hang') {
-    return { t: `${gripLabel(e)} · ${edgeStr(e)}`, d: `${nameOf(PROTOS, e.proto)} · ${edgesOf(e).length} × ${e.reps} · ${hangTiming(e)} · ${loadStr(e)}${e.rpe ? ' · RPE ' + e.rpe : ''}` };
+    const tt = e.test && e.bw ? hangTestTotal(e) : null;
+    return {
+      t: `${tag}${gripLabel(e)} · ${edgeStr(e)}`,
+      d: tt ? t('test_max', { kg: fmt(tt.total), p: fmt(tt.total / e.bw * 100, 0), e: fmt(tt.edge, 1) }) + ` · ${hangTiming(e)}`
+        : `${nameOf(PROTOS, e.proto)} · ${edgesOf(e).length} × ${e.reps} · ${hangTiming(e)} · ${loadStr(e)}${e.rpe ? ' · RPE ' + e.rpe : ''}`
+    };
+  }
+  if (e.type === 'kraft' && e.test) {
+    const o = kraftOrm(e);
+    return { t: tag + e.ex, d: setsStr(e.sets) + (o ? ' · ' + t('test_orm', { kg: o.bwex ? signed(o.total - o.bw) : fmt(o.total) }) : '') };
   }
   if (e.type === 'session') {
     const day = dateKey(e.ts);
@@ -530,11 +570,13 @@ function metricDefs(type) {
     load: { label: t('m_load'), unit: 'kg', d: 1 },
     maxload: { label: t('m_maxload'), unit: 'kg', d: 1 },
     pct: { label: t('m_pct'), unit: '%', d: 0 },
+    test: { label: t('m_test'), unit: '%', d: 0 },
     time: { label: t('m_time'), unit: 's', d: 0 },
     rpe: { label: t('m_rpe'), unit: 'RPE', d: 0, noBest: true }
   };
   return {
     kg: { label: t('m_kg'), unit: 'kg', d: 1 },
+    e1rm: { label: t('m_e1rm'), unit: 'kg', d: 1 },
     avgkg: { label: t('m_avgkg'), unit: 'kg', d: 1 },
     reps: { label: t('m_kreps'), unit: t('u_reps'), d: 0 },
     avgreps: { label: t('m_avgreps'), unit: t('u_reps'), d: 1 },
@@ -554,11 +596,13 @@ function metricValue(e, m) {
     if (m === 'load') return avg(ls);
     if (m === 'maxload') return Math.max(...ls);
     if (m === 'pct') return e.bw ? (e.bw + avg(ls)) / e.bw * 100 : null;
+    if (m === 'test') return e.test && e.bw ? hangTestTotal(e).total / e.bw * 100 : null;
     if (m === 'rpe') return e.rpe || null;
     return e.hang * e.reps * ed.length;
   }
   const s = e.sets;
   if (m === 'kg') return Math.max(...s.map(x => x.kg || 0));
+  if (m === 'e1rm') { const o = kraftOrm(e); return o ? o.total - (o.bwex ? o.bw : 0) : null; }
   if (m === 'avgkg') return avg(s.map(x => x.kg || 0));
   if (m === 'reps') return Math.max(...s.map(x => x.r));
   if (m === 'avgreps') return avg(s.map(x => x.r));
