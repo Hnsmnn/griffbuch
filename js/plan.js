@@ -1,7 +1,9 @@
 'use strict';
 /* Training plan: season (list of weeks) → block → week → session → exercise.
-   A block has one template week (b.sessions). A single week can be adjusted: it then gets its own
-   copy in b.overrides[weekIndex] and no longer follows the template. Done marks live in P.done by date. */
+   A block has two template weeks: A (b.sessions) for every week, and B (b.sessionsB) for the weeks
+   set to B in b.weekMode[weekIndex]. A single week can also be adjusted: it then gets its own copy in
+   b.overrides[weekIndex] and follows neither template. Week keys 'tpl' / 'tplB' stand for A / B.
+   Done marks live in P.done by date. */
 
 const GOALS = ['endu', 'pe', 'max', 'power', 'tech', 'base', 'recov', 'perf'];
 const goalName = b => b.goal === 'custom' ? (b.goalText || t('b_goal_custom')) : t('g_' + b.goal);
@@ -12,15 +14,37 @@ const blockAt = day => P.blocks.find(b => day >= b.start && day < blockEnd(b));
 const findBlock = id => P.blocks.find(b => b.id === id);
 const weekOf = (b, day) => Math.floor(daysBetween(b.start, day) / 7);
 const isDeload = (b, w) => !!b.deload && w === b.weeks - 1;
-const isAdjusted = (b, w) => w !== 'tpl' && !!(b.overrides && b.overrides[w]);
-const weekSessions = (b, w) => (isAdjusted(b, w) ? b.overrides[w] : b.sessions);
-const editableSessions = (b, w) => (w === 'tpl' ? b.sessions : isAdjusted(b, w) ? b.overrides[w] : null);
+const isTplW = w => w === 'tpl' || w === 'tplB';
+const isAdjusted = (b, w) => !isTplW(w) && !!(b.overrides && b.overrides[w]);
+const followsB = (b, w) => !isTplW(w) && !isAdjusted(b, w) && !!(b.weekMode && b.weekMode[w] === 'B');
+const tplB = b => (b.sessionsB = b.sessionsB || []);
+function weekSessions(b, w) {
+  if (w === 'tplB') return tplB(b);
+  if (isAdjusted(b, w)) return b.overrides[w];
+  return followsB(b, w) ? tplB(b) : b.sessions;
+}
+function editableSessions(b, w) {
+  if (w === 'tpl') return b.sessions;
+  if (w === 'tplB') return tplB(b);
+  return isAdjusted(b, w) ? b.overrides[w] : null;
+}
+/* Week w gets its own copy of whatever it currently shows. */
+function adjustWeek(b, w) {
+  b.overrides = b.overrides || {};
+  if (!b.overrides[w]) b.overrides[w] = clone(weekSessions(b, w));
+  return b.overrides[w];
+}
+function setWeekMode(b, w, m) {
+  b.weekMode = b.weekMode || {};
+  if (m === 'B') b.weekMode[w] = 'B'; else delete b.weekMode[w];
+  if (b.overrides) delete b.overrides[w];
+}
 const findSession = (b, w, sid) => weekSessions(b, w).find(s => s.id === sid);
 const sessDate = (b, w, s) => addDays(b.start, w * 7 + s.day);
 const countable = s => typeFam(s.type) !== 'rest';
 const isDone = (date, sid) => P.done.some(d => d.date === date && d.sid === sid);
 const sessLabel = s => s.name || typeName(s.type);
-const parseW = v => (v === 'tpl' ? 'tpl' : Number(v));
+const parseW = v => (isTplW(v) ? v : Number(v));
 function overlapping(start, weeks, exceptId) {
   const end = addDays(start, weeks * 7);
   return P.blocks.find(o => o.id !== exceptId && start < blockEnd(o) && o.start < end);
@@ -99,7 +123,7 @@ function kraftBaseline(it, day) {
 }
 /* The concrete exercise for week w of block b (template items stay as they are). */
 function plannedItem(it, b, w) {
-  if (!isAuto(it) || w === 'tpl') return { it, auto: false };
+  if (!isAuto(it) || isTplW(w)) return { it, auto: false };
   const day = addDays(b.start, w * 7), deload = isDeload(b, w);
   const pct = deload ? it.auto.start - 10 : it.auto.start + w * it.auto.inc;
   const x = clone(it);
@@ -129,7 +153,7 @@ function plannedItem(it, b, w) {
 /* One summary line for an exercise as planned in week w. */
 function itemLine(it, b, w) {
   if (!isAuto(it)) return itemSummary(it);
-  if (w === 'tpl') {
+  if (isTplW(w)) {
     const rule = t('auto_rule', { start: fmt(it.auto.start, 1), inc: fmt(it.auto.inc, 1) });
     if (it.kind === 'hang') return { t: `${gripLabel(it)} · ${edgeStr(it)}`, d: `${nameOf(PROTOS, it.proto)} · ${edgesOf(it).length} × ${it.reps} · ${hangTiming(it)} · ${rule}` };
     return { t: it.ex || t('it_kraft'), d: `${it.sets.length} × ${it.sets.map(s => s.r).join('/')} ${t('u_reps')} · ${rule}` };
@@ -170,7 +194,7 @@ const reid = list => list.map(s => ({ ...clone(s), id: newId('s'), items: (s.ite
 function dupBlock(b) {
   let start = blockEnd(b), guard = 0;
   while (overlapping(start, b.weeks, null) && guard++ < 520) start = addDays(start, 7);
-  const nb = { ...clone(b), id: newId('b'), start, color: ((b.color || 0) + 1) % COLORS.length, sessions: reid(b.sessions), overrides: {} };
+  const nb = { ...clone(b), id: newId('b'), start, color: ((b.color || 0) + 1) % COLORS.length, sessions: reid(b.sessions), sessionsB: reid(b.sessionsB || []), overrides: {} };
   Object.entries(b.overrides || {}).forEach(([k, v]) => { nb.overrides[k] = reid(v); });
   P.blocks.push(nb); savePlan();
   return nb;
@@ -210,6 +234,7 @@ function crumbLabel(pg) {
   }
   if (pg.p === 'templates') return t('tp_title');
   if (pg.p === 'fromentry') return t('fe_title');
+  if (pg.p === 'copyweek') return t('cw_crumb');
   return t('season');
 }
 
@@ -219,7 +244,7 @@ function renderPlan() {
   const last = state.planNav.length - 1;
   const crumbs = last > 0
     ? `<nav class="crumbtabs" aria-label="${esc(t('levels'))}">${state.planNav.map((p, i) => `${i ? '<span class="sep" aria-hidden="true">›</span>' : ''}<button type="button" data-act="crumb" data-n="${i}"${i === last ? ' aria-current="page"' : ''}>${esc(crumbLabel(p))}</button>`).join('')}</nav>` : '';
-  const pages = { season: seasonHTML, block: blockHTML, blockform: blockFormHTML, newsess: newSessHTML, session: sessionHTML, item: itemHTML, templates: templatesHTML, fromentry: fromEntryHTML };
+  const pages = { season: seasonHTML, block: blockHTML, blockform: blockFormHTML, newsess: newSessHTML, session: sessionHTML, item: itemHTML, templates: templatesHTML, fromentry: fromEntryHTML, copyweek: copyWeekHTML };
   $('#v-plan').innerHTML = crumbs + (pages[pg.p] || seasonHTML)(pg);
   const rows = $('#pi-rows'); if (rows) numberRows(rows);
 }
@@ -254,7 +279,7 @@ function seasonHTML() {
     const right = m <= today ? t('done_n', { d: st.d, n: st.n }) : t('sess_n', { n: st.n });
     rows += `<button type="button" class="wk${now ? ' now' : ''}" style="--blk:${COLORS[b.color || 0]}" data-act="openweek" data-b="${b.id}" data-w="${w}">${left}
       <span><span class="bname">${esc(b.name)}</span>${now ? ` <span class="pill today">${esc(t('today'))}</span>` : ''}${isDeload(b, w) ? ` <span class="pill">${esc(t('deload'))}</span>` : ''}
-      <span class="meta" style="display:block">${esc(t('week_n', { w: w + 1, n: b.weeks }))} · ${esc(goalName(b))}</span></span>
+      <span class="meta" style="display:block">${esc(t('week_n', { w: w + 1, n: b.weeks }))} · ${esc(goalName(b))}${isAdjusted(b, w) ? ' · ' + esc(t('wm_custom')) : followsB(b, w) ? ' · ' + esc(t('wm_B')) : ''}</span></span>
       <span class="right">${esc(right)}</span></button>`;
   }
   return `<div class="card"><div class="row" style="justify-content:space-between"><h2>${esc(t('season'))}</h2>
@@ -294,6 +319,7 @@ function saveBlock(pg) {
     const b = findBlock(pg.id);
     Object.assign(b, fields);
     Object.keys(b.overrides || {}).forEach(k => { if (Number(k) >= weeks) delete b.overrides[k]; });
+    Object.keys(b.weekMode || {}).forEach(k => { if (Number(k) >= weeks) delete b.weekMode[k]; });
     savePlan(); goBack();
   } else {
     const b = { id: newId('b'), ...fields, sessions: [], overrides: {} };
@@ -304,7 +330,7 @@ function saveBlock(pg) {
 
 /* ---------- block: week chips + seven days ---------- */
 function sessRowHTML(b, w, s) {
-  const fam = typeFam(s.type), date = w === 'tpl' ? null : sessDate(b, w, s), done = !!date && isDone(date, s.id);
+  const fam = typeFam(s.type), date = isTplW(w) ? null : sessDate(b, w, s), done = !!date && isDone(date, s.id);
   const attrs = `data-b="${b.id}" data-w="${w}" data-s="${s.id}"`;
   const sub = [s.name ? typeName(s.type) : '', fam === 'rest' ? '' : itemsText(s.items)].filter(Boolean).join(' · ');
   const chk = date && countable(s) ? `<button type="button" class="chk" data-act="toggledone" ${attrs} aria-pressed="${done}" aria-label="${esc(t('se_done'))}">✓</button>` : '<span></span>';
@@ -319,20 +345,28 @@ function blockHTML(pg) {
     <div class="row"><button type="button" class="btn ghost small" data-act="editblock">${esc(t('bv_edit'))}</button>
       <button type="button" class="btn ghost small" data-act="dupblock">${esc(t('bv_dup'))}</button>
       <button type="button" class="btn danger small" data-act="delblock">${esc(t('bv_del'))}</button></div></div>`;
-  const chips = `<div class="chips"><button type="button" class="chip" data-act="pickweek" data-w="tpl" aria-pressed="${w === 'tpl'}">${esc(t('bv_tpl'))}</button>`
-    + Array.from({ length: b.weeks }, (_, i) => `<button type="button" class="chip" data-act="pickweek" data-w="${i}" aria-pressed="${w === i}">W${i + 1}${isDeload(b, i) ? ' · D' : ''}${i === curW ? ' •' : ''}</button>`).join('') + '</div>';
+  const mark = i => (isAdjusted(b, i) ? ' ✎' : followsB(b, i) ? ' · B' : '');
+  const chips = `<div class="chips">`
+    + `<button type="button" class="chip" data-act="pickweek" data-w="tpl" aria-pressed="${w === 'tpl'}">${esc(t('bv_tplA'))}</button>`
+    + `<button type="button" class="chip" data-act="pickweek" data-w="tplB" aria-pressed="${w === 'tplB'}">${esc(t('bv_tplB'))}</button>`
+    + Array.from({ length: b.weeks }, (_, i) => `<button type="button" class="chip" data-act="pickweek" data-w="${i}" aria-pressed="${w === i}">W${i + 1}${mark(i)}${isDeload(b, i) ? ' · D' : ''}${i === curW ? ' •' : ''}</button>`).join('') + '</div>';
   let banner;
   if (w === 'tpl') banner = `<div class="banner">${esc(t('bv_tpl_hint'))}</div>`;
-  else {
+  else if (w === 'tplB') {
+    banner = `<div class="banner">${esc(t('bv_tplB_hint'))}${tplB(b).length ? '' : `<button type="button" class="btn ghost small" data-act="copyab">${esc(t('bv_copyab'))}</button>`}</div>`;
+  } else {
+    const mode = isAdjusted(b, w) ? 'custom' : followsB(b, w) ? 'B' : 'A';
+    const segBtn = (m, label) => `<button type="button" data-act="weekmode" data-m="${m}" aria-pressed="${mode === m}">${esc(t(label))}</button>`;
     banner = isDeload(b, w) ? `<div class="banner deload">${esc(t('bv_deload_hint'))}</div>` : '';
-    banner += isAdjusted(b, w)
-      ? `<div class="banner">${esc(t('bv_adjusted'))}<button type="button" class="btn ghost small" data-act="resetweek">${esc(t('bv_reset'))}</button></div>`
-      : `<div class="banner">${esc(t('bv_follows'))}<button type="button" class="btn ghost small" data-act="adjustweek">${esc(t('bv_adjust'))}</button></div>`;
+    banner += `<div class="banner" style="align-items:stretch"><span class="lbl">${esc(t('wm_label'))}</span>
+      <div class="seg" role="group">${segBtn('A', 'wm_A')}${segBtn('B', 'wm_B')}${segBtn('custom', 'wm_custom')}</div>
+      <span>${esc(t(mode === 'custom' ? 'bv_adjusted' : mode === 'B' ? 'wm_followsB' : 'wm_followsA'))}</span>
+      ${mode === 'custom' ? `<div class="row"><button type="button" class="btn ghost small" data-act="copyweek">${esc(t('cw_btn'))}</button></div>` : ''}</div>`;
   }
   const sessions = weekSessions(b, w), editable = !!editableSessions(b, w);
   let days = '';
   for (let d = 0; d < 7; d++) {
-    const date = w === 'tpl' ? null : addDays(b.start, w * 7 + d);
+    const date = isTplW(w) ? null : addDays(b.start, w * 7 + d);
     const list = sessions.filter(s => s.day === d);
     days += `<div class="dayrow"><div class="dayhead"><span>${esc(t('dl' + d))}${date ? ` <small>${esc(dayDate(date))}</small>` : ''}${date === today ? ` <span class="pill today">${esc(t('today'))}</span>` : ''}</span>
       ${editable ? `<button type="button" class="add" data-act="addsess" data-d="${d}">${esc(t('add_session'))}</button>` : ''}</div>
@@ -377,7 +411,7 @@ function sessionHTML(pg) {
   const b = findBlock(pg.id), s = findSession(b, pg.w, pg.s);
   if (!s) return emptyBox(t('novals'));
   const editable = !!editableSessions(b, pg.w), fam = typeFam(s.type);
-  const date = pg.w === 'tpl' ? null : sessDate(b, pg.w, s);
+  const date = isTplW(pg.w) ? null : sessDate(b, pg.w, s);
   const attrs = `data-b="${b.id}" data-w="${pg.w}" data-s="${s.id}"`;
   let head;
   if (editable) {
@@ -496,6 +530,21 @@ function readItem(it) {
 }
 const currentItem = pg => { const b = findBlock(pg.id), s = b && findSession(b, pg.w, pg.s); return s && s.items.find(i => i.id === pg.i); };
 
+/* ---------- copy an adjusted week to other weeks ---------- */
+function copyWeekHTML(pg) {
+  const b = findBlock(pg.id);
+  if (!isAdjusted(b, pg.w)) return emptyBox(t('novals'));
+  const rows = Array.from({ length: b.weeks }, (_, i) => i).filter(i => i !== pg.w).map(i => {
+    const note = isAdjusted(b, i) ? t('cw_over') : followsB(b, i) ? t('cw_overB') : '';
+    return `<label class="check"><input type="checkbox" data-chg="cwpick" data-w="${i}"${pg.sel.includes(i) ? ' checked' : ''}><span>
+      <b>${esc(t('week_n', { w: i + 1, n: b.weeks }))} · ${esc(dayDate(addDays(b.start, i * 7)))}${isDeload(b, i) ? ' · ' + esc(t('deload')) : ''}</b>
+      ${note ? `<span class="hint">${esc(note)}</span>` : ''}</span></label>`;
+  }).join('');
+  return `<div class="card"><h2>${esc(t('cw_title', { w: pg.w + 1 }))}</h2>${hintP(t('cw_hint'))}
+    <div class="items">${rows}</div><p class="err" id="cw-err"></p>
+    <button type="button" class="btn" data-act="cwgo">${esc(t('cw_go'))}</button></div>`;
+}
+
 /* ---------- templates ---------- */
 function templatesHTML() {
   const list = P.templates.length
@@ -513,7 +562,7 @@ function fromEntryHTML(pg) {
   const today = todayStr();
   if (!pg.b || !findBlock(pg.b)) pg.b = (blockAt(today) || P.blocks.slice().sort((a, b) => (a.start < b.start ? -1 : 1)).filter(b => b.start <= today).pop() || P.blocks[0]).id;
   const b = findBlock(pg.b);
-  if (pg.w == null || (pg.w !== 'tpl' && pg.w >= b.weeks)) pg.w = 'tpl';
+  if (pg.w == null || (!isTplW(pg.w) && pg.w >= b.weeks)) pg.w = 'tpl';
   if (pg.d == null) pg.d = dayIdx(dateKey(e.ts));
   const daySess = weekSessions(b, pg.w).filter(s => s.day === pg.d && countable(s));
   if (!pg.s || (pg.s !== '__new' && !daySess.some(s => s.id === pg.s))) pg.s = '__new';
@@ -523,7 +572,7 @@ function fromEntryHTML(pg) {
     <div class="entry ${e.type}"><span class="tag"></span><div><div class="t">${esc(x.t)}</div><div class="d">${esc(x.d)}</div></div></div>
     <div class="grid">
       <label class="f full"><span>${esc(t('fe_block'))}</span><select data-chg="fe" data-k="b">${P.blocks.map(o => opt(o.id, o.name, pg.b)).join('')}</select></label>
-      <label class="f"><span>${esc(t('fe_week'))}</span><select data-chg="fe" data-k="w">${opt('tpl', t('bv_tpl_long'), pg.w)}${Array.from({ length: b.weeks }, (_, i) => opt(i, t('fe_only_week', { w: i + 1 }), pg.w)).join('')}</select></label>
+      <label class="f"><span>${esc(t('fe_week'))}</span><select data-chg="fe" data-k="w">${opt('tpl', t('bv_tplA'), pg.w)}${opt('tplB', t('bv_tplB'), pg.w)}${Array.from({ length: b.weeks }, (_, i) => opt(i, t('fe_only_week', { w: i + 1 }), pg.w)).join('')}</select></label>
       <label class="f"><span>${esc(t('fe_day'))}</span><select data-chg="fe" data-k="d">${[0, 1, 2, 3, 4, 5, 6].map(d => opt(d, t('dl' + d), pg.d)).join('')}</select></label>
       <label class="f full"><span>${esc(t('fe_session'))}</span><select data-chg="fe" data-k="s">${opt('__new', t('fe_new_session'), pg.s)}${daySess.map(s => opt(s.id, sessLabel(s), pg.s)).join('')}</select></label>
     </div><button type="button" class="btn" data-act="feadd">${esc(t('fe_add'))}</button></div>`;
@@ -532,7 +581,7 @@ function addEntryToPlan(pg) {
   const e = state.entries.find(x => x.id === pg.e), b = findBlock(pg.b);
   if (!e || !b) return;
   let list = editableSessions(b, pg.w);
-  if (!list) { b.overrides = b.overrides || {}; b.overrides[pg.w] = clone(b.sessions); list = b.overrides[pg.w]; }
+  if (!list) list = adjustWeek(b, pg.w);
   let s = pg.s !== '__new' && list.find(x => x.id === pg.s);
   if (!s) {
     s = { id: newId('s'), day: pg.d, type: e.type === 'hang' ? 'hang' : e.type === 'kraft' ? 'kraft' : (e.stype || 'cfree'), name: '', note: '', items: [] };
@@ -666,8 +715,23 @@ const ACTS = {
     state.planNav = [{ p: 'season' }]; renderPlan();
   },
   pickweek: el => { navTop().w = parseW(el.dataset.w); renderPlan(); },
-  adjustweek() { const pg = navTop(), b = findBlock(pg.id); b.overrides = b.overrides || {}; b.overrides[pg.w] = clone(b.sessions); savePlan(); renderPlan(); },
-  resetweek() { const pg = navTop(), b = findBlock(pg.id); delete b.overrides[pg.w]; savePlan(); renderPlan(); },
+  /* A week follows template A, template B, or its own copy; leaving an own copy needs a second tap. */
+  weekmode(el) {
+    const pg = navTop(), b = findBlock(pg.id), m = el.dataset.m;
+    const cur = isAdjusted(b, pg.w) ? 'custom' : followsB(b, pg.w) ? 'B' : 'A';
+    if (m === cur) return;
+    if (m === 'custom') adjustWeek(b, pg.w);
+    else { if (cur === 'custom' && !armed(el, t('wm_discard'))) return; setWeekMode(b, pg.w, m); }
+    savePlan(); renderPlan();
+  },
+  copyab() { const b = findBlock(navTop().id); b.sessionsB = reid(b.sessions); savePlan(); renderPlan(); },
+  copyweek: () => { const pg = navTop(); go({ p: 'copyweek', id: pg.id, w: pg.w, sel: [] }); },
+  cwgo() {
+    const pg = navTop(), b = findBlock(pg.id);
+    if (!pg.sel.length) { $('#cw-err').textContent = t('cw_none'); return; }
+    pg.sel.forEach(i => { b.overrides[i] = clone(b.overrides[pg.w]); });
+    savePlan(); toast(t('cw_done', { n: pg.sel.length })); goBack();
+  },
   addsess: el => { const pg = navTop(); go({ p: 'newsess', id: pg.id, w: pg.w, d: Number(el.dataset.d) }); },
   opensess(el) {
     const page = { p: 'session', id: el.dataset.b, w: parseW(el.dataset.w), s: el.dataset.s };
@@ -729,6 +793,7 @@ const CHG = {
     if (f === 'type' || f === 'day') renderPlan();
     else if (f === 'name' && $('.crumbtabs [aria-current="page"]')) $('.crumbtabs [aria-current="page"]').textContent = crumbLabel(pg);
   },
+  cwpick(el) { const pg = navTop(), i = Number(el.dataset.w); pg.sel = el.checked ? [...pg.sel, i] : pg.sel.filter(x => x !== i); },
   fe(el) { const pg = navTop(), k = el.dataset.k; pg[k] = k === 'w' ? parseW(el.value) : k === 'd' ? Number(el.value) : el.value; renderPlan(); },
   /* Turning automatic weights on uses the block goal's defaults; strength reps follow the goal too. */
   piauto(el) {

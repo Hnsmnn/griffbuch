@@ -484,7 +484,7 @@ $('#x-paste').addEventListener('click', async () => {
 /* ---------- settings view ---------- */
 function typeInUse(id) {
   const inSessions = list => (list || []).some(s => s.type === id);
-  return P.blocks.some(b => inSessions(b.sessions) || Object.values(b.overrides || {}).some(inSessions)) ||
+  return P.blocks.some(b => inSessions(b.sessions) || inSessions(b.sessionsB) || Object.values(b.overrides || {}).some(inSessions)) ||
     P.templates.some(x => x.type === id) || state.entries.some(e => e.type === 'session' && e.stype === id);
 }
 function renderSettings() {
