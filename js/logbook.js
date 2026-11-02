@@ -801,7 +801,7 @@ function ascPoints(e, kind) {
   return 10 * Math.pow(f, v) * (e.flash ? Math.sqrt(f) : 1);
 }
 /* One value per calendar week up to now: level = average of the top N grades in the
-   window ending that week, pts = sum of points climbed in that week. */
+   window ending that week, pts = points per week, averaged over the last ptsWeeks weeks. */
 function ascentWeekly(list, kind, sc) {
   if (!list.length) return [];
   const out = [], lastMon = mondayOf(todayStr());
@@ -809,7 +809,8 @@ function ascentWeekly(list, kind, sc) {
   for (let m = mondayOf(days[0].d); m <= lastMon; m = addDays(m, 7)) {
     const end = addDays(m, 7), from = addDays(end, -7 * S.lvl.weeks);
     const top = days.filter(x => x.d >= from && x.d < end).map(x => sc.value(x.e)).sort((a, b) => b - a).slice(0, S.lvl.top);
-    const pts = days.filter(x => x.d >= m && x.d < end).reduce((a, x) => a + ascPoints(x.e, kind), 0);
+    const pFrom = addDays(end, -7 * S.lvl.ptsWeeks);
+    const pts = days.filter(x => x.d >= pFrom && x.d < end).reduce((a, x) => a + ascPoints(x.e, kind), 0) / S.lvl.ptsWeeks;
     out.push({ x: parseDay(m).getTime(), level: top.length ? avg(top) : null, pts });
   }
   return out;
@@ -895,7 +896,10 @@ function renderAscentProg() {
        <div class="row" style="flex-wrap:nowrap">${stepper('top', S.lvl.top)}<span style="flex:1;min-width:0">${esc(t('lvl_top'))}</span></div>
        <div class="row" style="flex-wrap:nowrap">${stepper('weeks', S.lvl.weeks)}<span style="flex:1;min-width:0">${esc(t('lvl_weeks'))}</span></div>
        ${hintP(t('lvl_hint', { n: S.lvl.top, w: S.lvl.weeks }))}` : '';
-  const ptsHint = sel.includes('pts') ? hintP(t('pts_hint', { f: fmt(sc.numeric ? 1.5 : 1.25, 2) })) : '';
+  const ptsHint = sel.includes('pts')
+    ? `<div class="lbl">${esc(t('pts_cfg'))}</div>
+       <div class="row" style="flex-wrap:nowrap">${stepper('ptsWeeks', S.lvl.ptsWeeks)}<span style="flex:1;min-width:0">${esc(t('lvl_weeks'))}</span></div>
+       ${hintP(t('pts_hint', { f: fmt(sc.numeric ? 1.5 : 1.25, 2) }))}` : '';
 
   const catChips = ASC_CATS.filter(([k, e]) => counts[k + '|' + e]).map(([k, e]) => `<button type="button" class="chip" data-acat="${k}|${e}" aria-pressed="${k + '|' + e === cat}">${esc(t(k))} · ${esc(t(e))} <small>${counts[k + '|' + e]}</small></button>`).join('');
   let chart;
@@ -933,7 +937,7 @@ function renderAscentProg() {
   $$('[data-layout]', card).forEach(b => b.addEventListener('click', () => { state.progLayout = b.dataset.layout; renderProg(); }));
   $$('[data-per]', card).forEach(b => b.addEventListener('click', () => { state.pyrPeriod = b.dataset.per; renderProg(); }));
   $$('[data-lvl]', card).forEach(b => b.addEventListener('click', () => {
-    const k = b.dataset.lvl, max = k === 'top' ? 30 : 52;
+    const k = b.dataset.lvl, max = k === 'top' ? 30 : k === 'ptsWeeks' ? 26 : 52;
     S.lvl[k] = Math.min(max, Math.max(1, S.lvl[k] + Number(b.dataset.d)));
     saveSettings(); renderProg();
   }));

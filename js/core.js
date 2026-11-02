@@ -33,7 +33,7 @@ function defaultSettings() {
   const lang = (navigator.language || '').toLowerCase().startsWith('de') ? 'de' : 'en';
   return {
     lang, bw: null,
-    lvl: { top: 5, weeks: 8 },
+    lvl: { top: 5, weeks: 8, ptsWeeks: 1 },
     scales: { boulder: 'font', route: 'french' },
     gym: { boulder: { on: false, min: 1, max: 9, name: '' }, route: { on: false, min: 1, max: 9, name: '' } }
   };
