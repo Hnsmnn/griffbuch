@@ -256,3 +256,23 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
 #toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(84px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 0.92rem; z-index: 9; max-width: calc(100% - 32px); }
 @media (max-width: 380px) { .grid.three { grid-template-columns: repeat(2, minmax(0,1fr)); } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* zoomable charts */
+.chartbox { position: relative; }
+.chart-tools { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 4px; }
+.ztool { min-width: 36px; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); font: 600 1.05rem var(--font-body); cursor: pointer; display: grid; place-items: center; }
+.ztool.wide { font-size: .85rem; }
+.ztool:disabled { opacity: .35; cursor: default; }
+.ztool svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.chart-area { touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+.chart .grid-v { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 3; }
+.chart .grid-v.minor { stroke-dasharray: 1 4; opacity: .7; }
+.chart .tick, .chart .axis-l { stroke: var(--muted); stroke-width: 1; }
+.chart .yr { font-weight: 600; fill: var(--ink); }
+.bigchart { position: fixed; inset: 0; z-index: 30; background: var(--bg); display: flex; padding: max(8px, env(safe-area-inset-top, 0px)) max(10px, env(safe-area-inset-right, 0px)) max(8px, env(safe-area-inset-bottom, 0px)) max(10px, env(safe-area-inset-left, 0px)); }
+.bigchart .chartbox { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.bigchart .big-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.bigchart .big-head b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bigchart .chart-tools { margin: 0; }
+.bigchart .chart-area { flex: 1; min-height: 0; overflow: hidden; touch-action: none; }
+body.noscroll { overflow: hidden; }

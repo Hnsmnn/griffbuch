@@ -627,27 +627,85 @@ function axisScale(vals, int) {
   return { lo: a, hi: a + 4 * step, step };
 }
 
-/* series: [{color, metric, points:[{x,y}]}], all non-empty.
-   Series with the same unit share one axis; axes alternate left/right. */
+/* ---------- time axis ---------- */
+const DAY = 864e5, MINSPAN = 28 * DAY;
+/* Ticks adapt to the visible span: weeks, months, quarters or years. */
+function xTicks(x0, x1, maxN) {
+  const span = x1 - x0;
+  const steps = [['w', 1], ['w', 2], ['m', 1], ['m', 2], ['m', 3], ['m', 6], ['y', 1], ['y', 2], ['y', 5], ['y', 10]];
+  const len = { w: 7 * DAY, m: 30.44 * DAY, y: 365.25 * DAY };
+  const [u, n] = steps.find(([u, n]) => span / (len[u] * n) <= maxN) || steps[steps.length - 1];
+  const d = new Date(x0); d.setHours(0, 0, 0, 0);
+  if (u === 'w') d.setDate(d.getDate() - (d.getDay() + 6) % 7);
+  else if (u === 'm') { d.setDate(1); d.setMonth(Math.floor(d.getMonth() / n) * n); }
+  else { d.setDate(1); d.setMonth(0); d.setFullYear(Math.floor(d.getFullYear() / n) * n); }
+  const out = [];
+  for (let guard = 0; d.getTime() <= x1 && guard < 400; guard++) {
+    if (d.getTime() >= x0) out.push(d.getTime());
+    if (u === 'w') d.setDate(d.getDate() + 7 * n); else if (u === 'm') d.setMonth(d.getMonth() + n); else d.setFullYear(d.getFullYear() + n);
+  }
+  return { u, n, ticks: out };
+}
+/* Fine ticks (lines) plus a coarser subset that gets labels, aligned to calendar units. */
+function xAxis(x0, x1, pw) {
+  const tk = xTicks(x0, x1, Math.max(3, Math.floor(pw / 26)));
+  const maxL = Math.max(2, Math.floor(pw / 58));
+  let k = 1;
+  while (Math.ceil(tk.ticks.length / k) > maxL) k++;
+  if (tk.u === 'm') while (12 % (tk.n * k) && tk.n * k < 12) k++; // labels on Jan/Apr/Jul…
+  const idx = (x, i) => tk.u === 'w' ? i : tk.u === 'm' ? new Date(x).getMonth() / tk.n : new Date(x).getFullYear() / tk.n;
+  // labels only on January: write the year itself
+  const u = tk.u === 'm' && tk.n * k === 12 ? 'y' : tk.u;
+  return { u, ticks: tk.ticks.map((x, i) => ({ x, label: Math.round(idx(x, i)) % k === 0 })) };
+}
+function tickLabel(x, u) {
+  const d = new Date(x);
+  if (u === 'w') return shortDate(x);
+  if (u === 'm') return d.toLocaleDateString(locale(), { month: 'short' });
+  return String(d.getFullYear());
+}
+
+/* series: [{color, metric, points:[{x,y,brk?}]}], all non-empty. brk = no line from the previous point.
+   Series with the same unit share one axis; axes alternate left/right.
+   opt: x0/x1 visible time range, w/h size, geo (filled with the plot geometry). */
+let clipSeq = 0;
 function chartSVG(series, opt = {}) {
-  const W = 340, H = opt.h || 210, AX = 36, pt = 26, pb = 28;
+  const W = opt.w || 340, H = opt.h || 220, AX = 36, pt = 26, pb = 38;
   const multi = series.length > 1;
+  const x0 = opt.x0, x1 = opt.x1;
+  const vis = p => p.x >= x0 && p.x <= x1;
   const axes = [...new Set(series.map(s => s.metric.unit))].map(u => {
     const ss = series.filter(s => s.metric.unit === u);
-    return { metric: ss[0].metric, color: ss.length === 1 ? ss[0].color : 'var(--ink)', sc: axisScale(ss.flatMap(s => s.points.map(p => p.y)), ss[0].metric.int) };
+    const ys = ss.flatMap(s => { const v = s.points.filter(vis); return (v.length ? v : s.points).map(p => p.y); });
+    return { metric: ss[0].metric, color: ss.length === 1 ? ss[0].color : 'var(--ink)', sc: axisScale(ys, ss[0].metric.int) };
   });
   const axisOf = s => axes.find(a => a.metric.unit === s.metric.unit);
   const n = axes.length;
   const nl = Math.ceil(n / 2), nr = Math.floor(n / 2);
-  const pl = 10 + AX * nl, pr = nr ? 10 + AX * nr : 16;
-  const x0 = opt.x0, x1 = opt.x1;
-  const sx = x => x1 === x0 ? pl + (W - pl - pr) / 2 : pl + (x - x0) / (x1 - x0) * (W - pl - pr);
+  const pl = 10 + AX * nl, pr = nr ? 10 + AX * nr : 16, pw = W - pl - pr;
+  if (opt.geo) Object.assign(opt.geo, { pl, pw, W });
+  const sx = x => x1 === x0 ? pl + pw / 2 : pl + (x - x0) / (x1 - x0) * pw;
   const yAt = (v, sc) => pt + (sc.hi - v) / (sc.hi - sc.lo) * (H - pt - pb);
+  const base = H - pb;
   let g = '';
   for (let i = 0; i <= 4; i++) {
     const y = (pt + i / 4 * (H - pt - pb)).toFixed(1);
     g += `<line class="grid-l" x1="${pl}" x2="${W - pr}" y1="${y}" y2="${y}"/>`;
   }
+  // time axis: vertical grid lines, tick marks, labels, year underneath
+  const tk = xAxis(x0, x1, pw);
+  let lastYear = null;
+  tk.ticks.forEach(({ x, label }) => {
+    const px = sx(x), yr = new Date(x).getFullYear(), X = px.toFixed(1);
+    const anchor = px < pl + 14 ? 'start' : px > W - pr - 14 ? 'end' : 'middle';
+    g += `<line class="grid-v${label ? '' : ' minor'}" x1="${X}" x2="${X}" y1="${pt}" y2="${base}"/><line class="tick" x1="${X}" x2="${X}" y1="${base}" y2="${base + (label ? 5 : 3)}"/>`;
+    if (!label) return;
+    g += `<text x="${X}" y="${base + 16}" text-anchor="${anchor}">${esc(tickLabel(x, tk.u))}</text>`;
+    if (tk.u !== 'y' && yr !== lastYear) g += `<text class="yr" x="${X}" y="${base + 30}" text-anchor="${anchor}">${yr}</text>`;
+    lastYear = yr;
+  });
+  if (!tk.ticks.some(x => x.label)) g += `<text x="${(pl + pw / 2).toFixed(1)}" y="${base + 16}" text-anchor="middle">${esc(shortDate((x0 + x1) / 2))}</text>`;
+  g += `<line class="axis-l" x1="${pl}" x2="${W - pr}" y1="${base}" y2="${base}"/>`;
   let body = '';
   axes.forEach((a, ai) => {
     const sc = a.sc, m = a.metric;
@@ -655,38 +713,202 @@ function chartSVG(series, opt = {}) {
     const ax = leftSide ? pl - level * AX : W - pr + level * AX;
     const tx = leftSide ? ax - 5 : ax + 5, anchor = leftSide ? 'end' : 'start';
     const tstyle = n > 1 ? ` style="fill:${a.color}"` : '';
-    if (n > 1) body += `<line x1="${ax}" x2="${ax}" y1="${pt}" y2="${H - pb}" style="stroke:${a.color};stroke-width:1.5"/>`;
+    if (n > 1) body += `<line x1="${ax}" x2="${ax}" y1="${pt}" y2="${base}" style="stroke:${a.color};stroke-width:1.5"/>`;
     for (let i = 0; i <= 4; i++) {
       const v = sc.lo + i * sc.step;
       body += `<text x="${tx}" y="${(yAt(v, sc) + 4).toFixed(1)}" text-anchor="${anchor}"${tstyle}>${esc(m.tick ? m.tick(v) : fmt(v, sc.step < 1 ? 1 : 0))}</text>`;
     }
     body += `<text x="${tx}" y="${pt - 10}" text-anchor="${anchor}"${tstyle}>${esc(m.unit)}</text>`;
   });
+  const cid = 'cp' + (++clipSeq);
+  let plot = '';
   series.forEach(s => {
-    const sc = axisOf(s).sc;
-    const pts = s.points.map(p => [sx(p.x), yAt(p.y, sc)]);
-    const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
-    if (!multi && pts.length > 1) {
-      const base = (H - pb).toFixed(1);
-      body += `<path class="ar" style="fill:${s.color}" d="${line} L${pts[pts.length - 1][0].toFixed(1)} ${base} L${pts[0][0].toFixed(1)} ${base} Z"/>`;
-    }
-    body += `<path class="ln" style="stroke:${s.color}" d="${line}"/>`;
-    body += pts.map((p, i) => `<circle class="pt" style="stroke:${s.color}${i === pts.length - 1 ? ';fill:' + s.color : ''}" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="${i === pts.length - 1 ? 4.5 : 3.5}"/>`).join('');
-    if (!multi) {
-      const lp = pts[pts.length - 1];
+    const sc = axisOf(s).sc, P = s.points, N = P.length;
+    // visible points plus one neighbour on each side, so lines run to the edge
+    let lo = 0, hi = N - 1;
+    while (lo < N - 1 && P[lo + 1].x < x0) lo++;
+    while (hi > 0 && P[hi - 1].x > x1) hi--;
+    const part = P.slice(lo, hi + 1);
+    const pts = part.map(p => [sx(p.x), yAt(p.y, sc)]);
+    const segs = [];
+    pts.forEach((p, i) => { if (!i || part[i].brk) segs.push([]); segs[segs.length - 1].push(p); });
+    const path = ps => ps.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+    segs.forEach(ps => {
+      if (!multi && ps.length > 1) plot += `<path class="ar" style="fill:${s.color}" d="${path(ps)} L${ps[ps.length - 1][0].toFixed(1)} ${base} L${ps[0][0].toFixed(1)} ${base} Z"/>`;
+      if (ps.length > 1) plot += `<path class="ln" style="stroke:${s.color}" d="${path(ps)}"/>`;
+    });
+    plot += pts.map((p, i) => {
+      const last = lo + i === N - 1;
+      return `<circle class="pt" style="stroke:${s.color}${last ? ';fill:' + s.color : ''}" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="${last ? 4.5 : 3.5}"/>`;
+    }).join('');
+    if (!multi && vis(P[N - 1])) {
+      const lp = [sx(P[N - 1].x), yAt(P[N - 1].y, sc)];
       const a2 = lp[0] > W - 60 ? 'end' : 'middle';
-      body += `<text class="val" x="${(a2 === 'end' ? Math.min(lp[0] + 4, W - 2) : lp[0]).toFixed(1)}" y="${Math.max(12, lp[1] - 10).toFixed(1)}" text-anchor="${a2}">${esc(mval(s.metric, s.points[s.points.length - 1].y))}</text>`;
+      body += `<text class="val" x="${(a2 === 'end' ? Math.min(lp[0] + 4, W - 2) : lp[0]).toFixed(1)}" y="${Math.max(12, lp[1] - 10).toFixed(1)}" text-anchor="${a2}">${esc(mval(s.metric, P[N - 1].y))}</text>`;
     }
   });
-  g += `<text x="${sx(x0).toFixed(1)}" y="${H - 8}" text-anchor="${x1 === x0 ? 'middle' : 'start'}">${esc(shortDate(x0))}</text>`;
-  if (x1 !== x0) g += `<text x="${sx(x1).toFixed(1)}" y="${H - 8}" text-anchor="end">${esc(shortDate(x1))}</text>`;
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(series.map(s => s.metric.label).join(', '))}">${g}${body}</svg>`;
+  const clip = `<defs><clipPath id="${cid}"><rect x="${pl - 6}" y="0" width="${pw + 12}" height="${base + 6}"/></clipPath></defs>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(series.map(s => s.metric.label).join(', '))}">${clip}${g}<g clip-path="url(#${cid})">${plot}</g>${body}</svg>`;
 }
-function chartsHTML(series, layout) {
+
+/* ---------- zoomable chart boxes ---------- */
+const CH = {}; let chSeq = 0, BIG = null, bigClosedAt = 0;
+function chartsHTML(series, layout, o = {}) {
   const xs = series.flatMap(s => s.points.map(p => p.x));
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
-  if (layout === 'together' || series.length === 1) return chartSVG(series, { x0, x1 });
-  return series.map(s => `<div class="lbl" style="color:${s.color}">${esc(s.metric.label)}</div>${chartSVG([s], { x0, x1, h: 150 })}`).join('');
+  let a = Math.min(...xs), b = Math.max(...xs);
+  if (b - a < MINSPAN) { const m = (a + b) / 2; a = m - MINSPAN / 2; b = m + MINSPAN / 2; }
+  const id = 'ch' + (++chSeq);
+  const c = CH[id] = { id, series, layout, key: o.key, title: o.title || '', full: [a, b], view: [a, b], geo: {} };
+  const saved = o.key && state.views[o.key];
+  if (saved) setView(c, saved[0], saved[1] - saved[0], true);
+  return `<div class="chartbox" data-chart="${id}"><div class="chart-tools">${chartToolsHTML(c, false)}</div><div class="chart-area">${chartsInner(c)}</div></div>`;
+}
+function chartsInner(c, dim) {
+  const [x0, x1] = c.view, w = dim && dim.w;
+  if (c.layout === 'together' || c.series.length === 1) return chartSVG(c.series, { x0, x1, w, h: dim ? dim.h : 220, geo: c.geo });
+  const h = dim ? Math.max(120, (dim.h - c.series.length * 24) / c.series.length) : 160;
+  return c.series.map((s, i) => `<div class="lbl" style="color:${s.color}">${esc(s.metric.label)}</div>${chartSVG([s], { x0, x1, w, h, geo: i ? null : c.geo })}`).join('');
+}
+const fullSpan = c => c.full[1] - c.full[0];
+const viewSpan = c => c.view[1] - c.view[0];
+const zoomable = c => fullSpan(c) > MINSPAN * 1.02;
+function chartToolsHTML(c, big) {
+  const zoomed = viewSpan(c) < fullSpan(c) - DAY / 2;
+  const z = zoomable(c) ? `<button type="button" class="ztool" data-z="out" aria-label="${esc(t('zoom_out'))}"${zoomed ? '' : ' disabled'}>−</button>
+    <button type="button" class="ztool" data-z="in" aria-label="${esc(t('zoom_in'))}"${viewSpan(c) > MINSPAN + DAY / 2 ? '' : ' disabled'}>+</button>
+    <button type="button" class="ztool wide" data-z="all"${zoomed ? '' : ' disabled'}>${esc(t('zoom_all'))}</button>` : '';
+  const end = big
+    ? `<button type="button" class="ztool" data-z="close" aria-label="${esc(t('close'))}">✕</button>`
+    : `<button type="button" class="ztool" data-z="big" aria-label="${esc(t('big_view'))}" title="${esc(t('big_view'))}"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>`;
+  return z + end;
+}
+function setView(c, a, span, quiet) {
+  span = Math.min(fullSpan(c), Math.max(MINSPAN, span));
+  a = Math.min(c.full[1] - span, Math.max(c.full[0], a));
+  c.view = [a, a + span];
+  if (c.key) state.views[c.key] = c.view;
+  if (!quiet) refreshChart(c);
+}
+const refreshQ = new Set(); let refreshRaf = 0;
+function refreshChart(c) {
+  refreshQ.add(c);
+  if (refreshRaf) return;
+  refreshRaf = requestAnimationFrame(() => {
+    refreshRaf = 0;
+    refreshQ.forEach(c => $$(`[data-chart="${c.id}"]`).forEach(box => {
+      const big = box.classList.contains('big');
+      const area = $('.chart-area', box);
+      $('.chart-tools', box).innerHTML = chartToolsHTML(c, big);
+      area.innerHTML = chartsInner(c, big ? { w: Math.max(340, Math.floor(area.clientWidth)), h: Math.max(220, Math.floor(area.clientHeight) - 6) } : null);
+    }));
+    refreshQ.clear();
+  });
+}
+function zoomBy(c, f) { const m = (c.view[0] + c.view[1]) / 2, s = viewSpan(c) * f; setView(c, m - s / 2, s); }
+
+/* big view: fixed overlay, fullscreen + landscape where the phone allows it */
+function openBig(c) {
+  let ov = $('#bigchart');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'bigchart'; ov.className = 'bigchart'; document.body.appendChild(ov); }
+  BIG = c;
+  ov.innerHTML = `<div class="chartbox big" data-chart="${c.id}"><div class="big-head"><b>${esc(c.title)}</b><div class="chart-tools"></div></div><div class="chart-area"></div></div>`;
+  ov.hidden = false;
+  document.body.classList.add('noscroll');
+  refreshChart(c);
+  try {
+    if (ov.requestFullscreen) ov.requestFullscreen({ navigationUI: 'hide' }).then(() => {
+      if (screen.orientation && screen.orientation.lock) return screen.orientation.lock('landscape');
+    }).catch(() => { });
+  } catch (e) { }
+}
+function closeBig() {
+  const c = BIG; if (!c) return;
+  BIG = null; bigClosedAt = Date.now();
+  const ov = $('#bigchart'); ov.hidden = true; ov.innerHTML = '';
+  document.body.classList.remove('noscroll');
+  try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (e) { }
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => { });
+  refreshChart(c);
+}
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && BIG) closeBig(); });
+window.addEventListener('resize', () => { if (BIG) refreshChart(BIG); });
+document.addEventListener('click', e => {
+  const b = e.target.closest && e.target.closest('[data-z]'); if (!b) return;
+  const c = CH[b.closest('[data-chart]').dataset.chart]; if (!c) return;
+  const z = b.dataset.z;
+  if (z === 'in') zoomBy(c, 0.5); else if (z === 'out') zoomBy(c, 2);
+  else if (z === 'all') setView(c, c.full[0], fullSpan(c));
+  else if (z === 'big') openBig(c); else if (z === 'close') closeBig();
+});
+
+/* gestures: one finger drags the zoomed view sideways, two fingers zoom */
+const PTRS = new Map(); let GEST = null;
+function gestureBase() {
+  GEST.v0 = GEST.c.view.slice();
+  GEST.p0 = [...PTRS.values()].map(p => ({ ...p }));
+}
+function plotFrac(g, clientX) {
+  const r = g.area.getBoundingClientRect(), geo = g.c.geo;
+  if (!geo.W || !r.width) return (clientX - r.left) / (r.width || 1);
+  return ((clientX - r.left) / r.width * geo.W - geo.pl) / geo.pw;
+}
+document.addEventListener('pointerdown', e => {
+  const area = e.target.closest && e.target.closest('.chart-area'); if (!area) return;
+  const c = CH[area.closest('[data-chart]').dataset.chart];
+  if (!c || !zoomable(c)) return;
+  if (GEST && GEST.c !== c) PTRS.clear();
+  GEST = { c, area };
+  PTRS.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  gestureBase();
+});
+document.addEventListener('pointermove', e => {
+  if (!GEST || !PTRS.has(e.pointerId)) return;
+  PTRS.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const g = GEST, ps = [...PTRS.values()], span0 = g.v0[1] - g.v0[0];
+  if (ps.length >= 2 && g.p0.length >= 2) {
+    const d0 = Math.hypot(g.p0[0].x - g.p0[1].x, g.p0[0].y - g.p0[1].y) || 1;
+    const d = Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) || 1;
+    const f0 = plotFrac(g, (g.p0[0].x + g.p0[1].x) / 2), f = plotFrac(g, (ps[0].x + ps[1].x) / 2);
+    const tMid = g.v0[0] + f0 * span0;
+    const span = Math.min(fullSpan(g.c), Math.max(MINSPAN, span0 * d0 / d));
+    setView(g.c, tMid - f * span, span);
+    e.preventDefault();
+  } else if (ps.length === 1 && span0 < fullSpan(g.c) - DAY / 2) {
+    const r = g.area.getBoundingClientRect(), geo = g.c.geo;
+    const pxPlot = geo.W ? r.width * geo.pw / geo.W : r.width;
+    const dx = ps[0].x - g.p0[0].x;
+    if (Math.abs(dx) > 3) { setView(g.c, g.v0[0] - dx / pxPlot * span0, span0); e.preventDefault(); }
+  }
+}, { passive: false });
+['pointerup', 'pointercancel'].forEach(ev => document.addEventListener(ev, e => {
+  if (!PTRS.delete(e.pointerId)) return;
+  if (PTRS.size) gestureBase(); else GEST = null;
+}));
+
+/* ---------- pauses ---------- */
+/* With "ignore pauses" on, a gap of more than S.gap.weeks without entries splits the data:
+   no line across the gap, and weekly values start fresh afterwards. */
+const gapMs = () => S.gap.weeks * 7 * DAY;
+function segStarts(times) {
+  if (!S.gap.on) return [];
+  return times.filter((x, i) => i && x - times[i - 1] > gapMs());
+}
+function withBreaks(points, starts) {
+  if (!starts.length) return points;
+  const seg = x => starts.filter(s => s <= x).length;
+  return points.map((p, i) => (i && seg(p.x) !== seg(points[i - 1].x) ? { ...p, brk: true } : p));
+}
+function gapCfgHTML() {
+  return `<div class="lbl">${esc(t('gap_cfg'))}</div>
+    <div class="row" style="flex-wrap:nowrap"><button type="button" class="chk" data-gap aria-pressed="${S.gap.on}" aria-label="${esc(t('gap_on'))}">✓</button><span style="flex:1;min-width:0">${esc(t('gap_on'))}</span></div>
+    ${S.gap.on ? `<div class="row" style="flex-wrap:nowrap"><div class="stepper"><button type="button" data-gapw="-1" aria-label="−">−</button><output>${S.gap.weeks}</output><button type="button" data-gapw="1" aria-label="+">+</button></div><span style="flex:1;min-width:0">${esc(t('gap_weeks'))}</span></div>
+    ${hintP(t('gap_hint'))}` : ''}`;
+}
+function bindGap(card) {
+  $$('[data-gap]', card).forEach(b => b.addEventListener('click', () => { S.gap.on = !S.gap.on; saveSettings(); renderProg(); }));
+  $$('[data-gapw]', card).forEach(b => b.addEventListener('click', () => {
+    S.gap.weeks = Math.min(26, Math.max(1, S.gap.weeks + Number(b.dataset.gapw))); saveSettings(); renderProg();
+  }));
 }
 function metricChipsHTML(ms, sel, attr) {
   return Object.entries(ms).map(([k, v]) => {
@@ -747,9 +969,10 @@ function renderProg() {
   const list = groups[cat].slice().sort((a, b) => a.ts - b.ts);
 
   const catChips = keys.map(k => `<button type="button" class="chip" data-cat="${esc(k)}" aria-pressed="${k === cat}">${esc(keyLabel(type, k))} <small>${groups[k].length}</small></button>`).join('');
+  const starts = segStarts(list.map(e => e.ts));
   const series = sel.map((k, i) => ({
     key: k, metric: ms[k], color: COLORS[i],
-    points: list.map(e => ({ x: e.ts, y: metricValue(e, k) })).filter(p => p.y != null && Number.isFinite(p.y))
+    points: withBreaks(list.map(e => ({ x: e.ts, y: metricValue(e, k) })).filter(p => p.y != null && Number.isFinite(p.y)), starts)
   }));
   const drawn = series.filter(s => s.points.length);
   let body;
@@ -768,7 +991,7 @@ function renderProg() {
     const rows = list.slice().reverse().slice(0, 12).map(e => `<tr><td>${esc(shortDate(e.ts))}</td>${series.map(s => { const v = metricValue(e, s.key); return `<td>${v == null || !Number.isFinite(v) ? '–' : esc(fmt(v, s.metric.d))}</td>`; }).join('')}</tr>`).join('');
     const table = `<div class="tbl"><table><thead><tr><th>${esc(t('date_col'))}</th>${series.map(s => `<th><i style="background:${s.color}"></i>${esc(s.metric.label)} (${esc(s.metric.unit)})</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
     const single = drawn.every(s => s.points.length === 1);
-    body = `${layoutSegHTML(drawn.length)}${chartsHTML(drawn, state.progLayout)}<div class="legend">${legend}</div>
+    body = `${layoutSegHTML(drawn.length)}${chartsHTML(drawn, state.progLayout, { key: type + '|' + cat, title: keyLabel(type, cat) })}<div class="legend">${legend}</div>${gapCfgHTML()}
       ${sel.some(k => ms[k].lower) ? hintP(t('lower_hint')) : ''}${single ? hintP(t('second_point')) : ''}
       <div class="lbl">${esc(t('recent'))}</div>${table}`;
   }
@@ -778,6 +1001,7 @@ function renderProg() {
   $$('[data-cat]', card).forEach(b => b.addEventListener('click', () => { state.progCat[type] = b.dataset.cat; renderProg(); }));
   $$('[data-metric]', card).forEach(b => b.addEventListener('click', () => toggleMetric(type, b.dataset.metric)));
   $$('[data-layout]', card).forEach(b => b.addEventListener('click', () => { state.progLayout = b.dataset.layout; renderProg(); }));
+  bindGap(card);
 }
 
 /* ---------- progress: ascents ---------- */
@@ -804,17 +1028,33 @@ function ascPoints(e, kind) {
    window ending that week, pts = points per week, averaged over the last ptsWeeks weeks. */
 function ascentWeekly(list, kind, sc) {
   if (!list.length) return [];
-  const out = [], lastMon = mondayOf(todayStr());
+  const out = [], today = todayStr();
   const days = list.map(e => ({ d: dateKey(e.ts), e }));
-  for (let m = mondayOf(days[0].d); m <= lastMon; m = addDays(m, 7)) {
-    const end = addDays(m, 7), from = addDays(end, -7 * S.lvl.weeks);
-    const top = days.filter(x => x.d >= from && x.d < end).map(x => sc.value(x.e)).sort((a, b) => b - a).slice(0, S.lvl.top);
-    const pFrom = addDays(end, -7 * S.lvl.ptsWeeks);
-    const pts = days.filter(x => x.d >= pFrom && x.d < end).reduce((a, x) => a + ascPoints(x.e, kind), 0) / S.lvl.ptsWeeks;
-    out.push({ x: parseDay(m).getTime(), level: top.length ? avg(top) : null, pts });
-  }
+  // With "ignore pauses": split at gaps, and only show a value once its window lies
+  // completely after the start of the active period (no data from before the pause).
+  const gw = 7 * S.gap.weeks, segs = [];
+  if (S.gap.on) {
+    let cur = { from: days[0].d, to: days[0].d };
+    days.forEach(x => { if (x.d > addDays(cur.to, gw)) { segs.push(cur); cur = { from: x.d, to: x.d }; } else cur.to = x.d; });
+    if (today <= addDays(cur.to, gw)) cur.to = today; // pause not reached yet: run up to now
+    segs.push(cur);
+  } else segs.push({ from: days[0].d, to: today });
+  segs.forEach((sg, si) => {
+    const startMon = mondayOf(sg.from);
+    const sd = S.gap.on ? days.filter(x => x.d >= sg.from && x.d <= sg.to) : days;
+    const ready = (w, end) => !S.gap.on || addDays(startMon, 7 * w) <= end;
+    for (let m = startMon; m <= mondayOf(sg.to); m = addDays(m, 7)) {
+      const end = addDays(m, 7), from = addDays(end, -7 * S.lvl.weeks);
+      const top = sd.filter(x => x.d >= from && x.d < end).map(x => sc.value(x.e)).sort((a, b) => b - a).slice(0, S.lvl.top);
+      const pFrom = addDays(end, -7 * S.lvl.ptsWeeks);
+      const pts = sd.filter(x => x.d >= pFrom && x.d < end).reduce((a, x) => a + ascPoints(x.e, kind), 0) / S.lvl.ptsWeeks;
+      out.push({ x: parseDay(m).getTime(), seg: si, level: top.length && ready(S.lvl.weeks, end) ? avg(top) : null, pts: ready(S.lvl.ptsWeeks, end) ? pts : null });
+    }
+  });
   return out;
 }
+/* No line between points from different active periods. */
+const brkBySeg = pts => pts.map((p, i) => (i && p.seg !== pts[i - 1].seg ? { ...p, brk: true } : p));
 
 /* Vertical bars per grade; flashes are the lower, highlighted part of each bar. */
 function pyramidSVG(sc, list) {
@@ -883,11 +1123,12 @@ function renderAscentProg() {
     d.v = { grade: Math.max(...gi), flash: fi.length ? Math.max(...fi) : null, att: at.length ? avg(at) : null, count: d.items.length, total: run };
   });
   const weekly = sel.some(k => ms[k] && ms[k].weekly) ? ascentWeekly(list, kind, sc) : [];
+  const dayStarts = segStarts(days.map(d => d.x));
   const series = sel.map((k, i) => ({
     key: k, metric: ms[k], color: COLORS[i],
     points: ms[k].weekly
-      ? weekly.filter(w => w[k] != null).map(w => ({ x: w.x, y: w[k] }))
-      : days.filter(d => d.v[k] != null).map(d => ({ x: d.x, y: d.v[k] }))
+      ? brkBySeg(weekly.filter(w => w[k] != null).map(w => ({ x: w.x, y: w[k], seg: w.seg })))
+      : withBreaks(days.filter(d => d.v[k] != null).map(d => ({ x: d.x, y: d.v[k] })), dayStarts)
   }));
   const drawn = series.filter(s => s.points.length);
   const stepper = (k, v) => `<div class="stepper"><button type="button" data-lvl="${k}" data-d="-1" aria-label="−">−</button><output>${v}</output><button type="button" data-lvl="${k}" data-d="1" aria-label="+">+</button></div>`;
@@ -913,15 +1154,21 @@ function renderAscentProg() {
       const best = m.lower ? Math.min(...ys) : Math.max(...ys);
       return `<div class="lg"><i style="background:${s.color}"></i><div><b>${esc(m.label)}</b><span>${esc(t('last'))} ${esc(mval(m, last))}${m.noBest ? '' : ' · ' + esc(t('best')) + ' ' + esc(mval(m, best))} · ${esc(t('since', { date: shortDate(s.points[0].x) }))}</span></div></div>`;
     }).join('');
-    chart = `${layoutSegHTML(drawn.length)}${chartsHTML(drawn, state.progLayout)}<div class="legend">${legend}</div>${sel.includes('att') ? hintP(t('att_lower_hint')) : ''}`;
+    chart = `${layoutSegHTML(drawn.length)}${chartsHTML(drawn, state.progLayout, { key: 'asc|' + cat, title: t(kind) + ' · ' + t(env) })}<div class="legend">${legend}</div>${sel.includes('att') ? hintP(t('att_lower_hint')) : ''}`;
   }
-  chart += lvlCfg + ptsHint;
+  chart += lvlCfg + ptsHint + gapCfgHTML();
 
-  const per = state.pyrPeriod;
-  const from = per === '12m' ? Date.now() - 365 * 864e5 : per === 'year' ? new Date(new Date().getFullYear(), 0, 1).getTime() : 0;
-  const inPer = list.filter(e => e.ts >= from);
+  // pyramid period: all, last 12 months, or one calendar year that has entries
+  const years = [...new Set(list.map(e => new Date(e.ts).getFullYear()))].sort((a, b) => b - a);
+  let per = state.pyrPeriod;
+  if (per === 'year') per = String(new Date().getFullYear());
+  if (per !== 'all' && per !== '12m' && !years.includes(Number(per))) per = 'all';
+  state.pyrPeriod = per;
+  const inPer = per === 'all' ? list
+    : per === '12m' ? list.filter(e => e.ts >= Date.now() - 365 * DAY)
+    : list.filter(e => new Date(e.ts).getFullYear() === Number(per));
   const nFlash = inPer.filter(e => e.flash).length;
-  const perChips = [['all', 'per_all'], ['12m', 'per_12'], ['year', 'per_year']].map(([k, l]) => `<button type="button" class="chip" data-per="${k}" aria-pressed="${k === per}">${esc(t(l))}</button>`).join('');
+  const perChips = [['all', t('per_all')], ['12m', t('per_12')], ...years.map(y => [String(y), String(y)])].map(([k, l]) => `<button type="button" class="chip" data-per="${k}" aria-pressed="${k === per}">${esc(l)}</button>`).join('');
   const pyr = inPer.length
     ? `${hintP(t('pyr_count', { n: inPer.length, f: nFlash }))}${pyramidSVG(sc, inPer)}
        <div class="swatches"><span><i style="background:var(--c2)"></i>${esc(t('flash'))}</span><span><i style="background:var(--c1)"></i>${esc(t('not_flashed'))}</span></div>`
@@ -936,6 +1183,7 @@ function renderAscentProg() {
   $$('[data-ametric]', card).forEach(b => b.addEventListener('click', () => toggleMetric('ascent', b.dataset.ametric)));
   $$('[data-layout]', card).forEach(b => b.addEventListener('click', () => { state.progLayout = b.dataset.layout; renderProg(); }));
   $$('[data-per]', card).forEach(b => b.addEventListener('click', () => { state.pyrPeriod = b.dataset.per; renderProg(); }));
+  bindGap(card);
   $$('[data-lvl]', card).forEach(b => b.addEventListener('click', () => {
     const k = b.dataset.lvl, max = k === 'top' ? 30 : k === 'ptsWeeks' ? 26 : 52;
     S.lvl[k] = Math.min(max, Math.max(1, S.lvl[k] + Number(b.dataset.d)));

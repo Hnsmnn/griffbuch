@@ -36,6 +36,8 @@ history.pushState({ gb: 'guard' }, ''); guards = 1;
   topUpGuards();
 }, true));
 function handleBack() {
+  if (BIG) { closeBig(); return true; }
+  if (Date.now() - bigClosedAt < 800) return true; // back already left fullscreen and closed the big view
   if (state.tab === 'plan' && state.planNav.length > 1) { planUp(); return true; }
   if (state.tab === 'settings') { showTab(state.prevTab); return true; }
   if (state.tab === 'plan') { showTab(state.lastLogTab); return true; }
